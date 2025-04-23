@@ -1,0 +1,574 @@
+import type { CallToolRequest } from "@modelcontextprotocol/sdk/types.js";
+import type { Db, MongoClient } from "mongodb";
+import { FindItemTool } from "../tools/findItem.js";
+import { EstimateTimeTool } from "../tools/estimateTime.js";
+import { ItemsModel } from "../model/items.js";
+import { LocationsModel } from "../model/locations.js";
+import { ContactsModel } from "../model/contacts.js";
+import { BioDataModel } from "../model/bioData.js";
+import { TasksModel } from "../model/tasks.js";
+import { ObjectId } from "mongodb";
+
+// MongoDB 标准操作类型
+type MongoOperation =
+  | "find_item" // 查找物品
+  | "estimate_time" // 估算出行时间
+  | "update_item" // 更新物品位置或状态
+  | "query_item" // 查询物品
+  | "query_location" // 查询位置
+  | "query_contact" // 查询联系人
+  | "query_biodata" // 查询生物数据
+  | "query_task" // 查询任务
+  | "get_latest_biodata" // 获取最新生物数据
+  | "get_pending_tasks"; // 获取待办任务
+
+// 不允许在只读模式下执行的操作
+const WRITE_OPERATIONS = ["update_item"];
+
+// ObjectId 转换模式
+type ObjectIdConversionMode = "auto" | "none" | "force";
+
+/**
+ * 处理调用工具请求
+ */
+export async function handleCallToolRequest({
+  request,
+  client,
+  db,
+  isReadOnlyMode,
+}: {
+  request: CallToolRequest;
+  client: MongoClient;
+  db: Db;
+  isReadOnlyMode: boolean;
+}) {
+  const { name, arguments: args = {} } = request.params;
+  const operation = name as MongoOperation;
+
+  console.warn(`正在处理工具调用: ${operation}`);
+
+  // 检查操作是否允许在只读模式下执行
+  if (isReadOnlyMode && WRITE_OPERATIONS.includes(operation)) {
+    throw new Error(`ReadonlyError: 操作 '${operation}' 在只读模式下不允许`);
+  }
+
+  // 根据操作名称路由到相应的处理器
+  try {
+    switch (operation) {
+      case "find_item":
+        return await handleFindItem(db, args);
+      case "estimate_time":
+        return await handleEstimateTime(db, args);
+      case "update_item":
+        return await handleUpdateItem(db, args);
+      case "query_item":
+        return await handleQueryItem(db, args);
+      case "query_location":
+        return await handleQueryLocation(db, args);
+      case "query_contact":
+        return await handleQueryContact(db, args);
+      case "query_biodata":
+        return await handleQueryBioData(db, args);
+      case "query_task":
+        return await handleQueryTask(db, args);
+      case "get_latest_biodata":
+        return await handleGetLatestBioData(db, args);
+      case "get_pending_tasks":
+        return await handleGetPendingTasks(db, args);
+      default:
+        throw new Error(`未知操作: ${operation}`);
+    }
+  } catch (error) {
+    console.error(`处理工具调用 ${operation} 时出错:`, error);
+    throw error;
+  }
+}
+
+/**
+ * 处理查找物品
+ * @param db 数据库实例
+ * @param args 参数
+ * @returns 查找结果
+ */
+async function handleFindItem(db: Db, args: Record<string, unknown>) {
+  const findItemTool = new FindItemTool(db);
+
+  const itemName = args.itemName as string;
+  const exactMatch = (args.exactMatch as boolean) || false;
+
+  if (!itemName) {
+    throw new Error("物品查找需要提供物品名称");
+  }
+
+  const result = await findItemTool.execute({
+    itemName,
+    exactMatch,
+  });
+
+  // 格式化响应
+  const formattedResponse = findItemTool.formatResponse(result);
+
+  return formatResponse({
+    success: result.found,
+    message: formattedResponse,
+    items: result.items || [],
+    rawResult: result,
+  });
+}
+
+/**
+ * 处理出行时间估算
+ * @param db 数据库实例
+ * @param args 参数
+ * @returns 估算结果
+ */
+async function handleEstimateTime(db: Db, args: Record<string, unknown>) {
+  const estimateTimeTool = new EstimateTimeTool(db);
+
+  const origin = args.origin as string;
+  const destination = args.destination as string;
+
+  if (!origin || !destination) {
+    throw new Error("时间估算需要提供起点和终点");
+  }
+
+  const result = await estimateTimeTool.execute({
+    origin,
+    destination,
+  });
+
+  // 格式化响应
+  const formattedResponse = estimateTimeTool.formatResponse(result);
+
+  return formatResponse({
+    success: result.success,
+    message: formattedResponse,
+    estimation: result.estimation,
+    rawResult: result,
+  });
+}
+
+/**
+ * 处理更新物品
+ * @param db 数据库实例
+ * @param args 参数
+ * @returns 更新结果
+ */
+async function handleUpdateItem(db: Db, args: Record<string, unknown>) {
+  const itemsModel = new ItemsModel(db);
+
+  const itemId = args.itemId as string;
+  const locationId = args.locationId as string | null;
+  const containerId = args.containerId as string | null;
+  const note = args.note as string | null;
+
+  if (!itemId) {
+    throw new Error("更新物品需要提供物品ID");
+  }
+
+  try {
+    const result = await itemsModel.updateItemLocation(
+      itemId,
+      locationId,
+      containerId,
+      note
+    );
+
+    if (!result.success) {
+      return formatResponse({
+        success: false,
+        message: result.error || "更新物品失败",
+        error: result.error,
+      });
+    }
+
+    let message = `成功更新物品"${result.item?.name || itemId}"`;
+
+    if (locationId || containerId) {
+      message += "的位置";
+    }
+
+    return formatResponse({
+      success: true,
+      message,
+      item: result.item,
+    });
+  } catch (error) {
+    return formatResponse({
+      success: false,
+      message: `更新物品失败: ${error}`,
+      error: `${error}`,
+    });
+  }
+}
+
+/**
+ * 处理查询物品
+ * @param db 数据库实例
+ * @param args 参数
+ * @returns 查询结果
+ */
+async function handleQueryItem(db: Db, args: Record<string, unknown>) {
+  const itemsModel = new ItemsModel(db);
+
+  // 处理不同的查询参数
+  if (args.itemId) {
+    // 根据ID查询
+    const item = await itemsModel.getItemById(
+      new ObjectId(args.itemId.toString())
+    );
+    return formatResponse({ item });
+  }
+
+  if (args.containerItems && args.containerId) {
+    // 查询容器内的物品
+    const items = await itemsModel.getItemsInContainer(
+      args.containerId as string
+    );
+    return formatResponse({ items });
+  }
+
+  if (args.search) {
+    // 搜索物品
+    const items = await itemsModel.findItems(args.search as string);
+    return formatResponse({ items });
+  }
+
+  throw new Error("查询物品需要提供有效的查询参数");
+}
+
+/**
+ * 处理查询位置
+ * @param db 数据库实例
+ * @param args 参数
+ * @returns 查询结果
+ */
+async function handleQueryLocation(db: Db, args: Record<string, unknown>) {
+  const locationsModel = new LocationsModel(db);
+
+  // 处理不同的查询参数
+  if (args.locationId) {
+    // 根据ID查询
+    const location = await locationsModel.getLocationById(
+      new ObjectId(args.locationId.toString())
+    );
+    return formatResponse({ location });
+  }
+
+  if (args.hierarchyFor) {
+    // 查询位置层次结构
+    const hierarchy = await locationsModel.getLocationHierarchy(
+      args.hierarchyFor as string
+    );
+    return formatResponse({ hierarchy });
+  }
+
+  if (args.childrenOf) {
+    // 查询子位置
+    const children = await locationsModel.getChildLocations(
+      args.childrenOf as string
+    );
+    return formatResponse({ children });
+  }
+
+  if (args.search) {
+    // 搜索位置
+    const locations = await locationsModel.findLocations(args.search as string);
+    return formatResponse({ locations });
+  }
+
+  throw new Error("查询位置需要提供有效的查询参数");
+}
+
+/**
+ * 处理查询联系人
+ * @param db 数据库实例
+ * @param args 参数
+ * @returns 查询结果
+ */
+async function handleQueryContact(db: Db, args: Record<string, unknown>) {
+  const contactsModel = new ContactsModel(db);
+
+  // 处理不同的查询参数
+  if (args.contactId) {
+    // 根据ID查询
+    const contact = await contactsModel.getContactById(
+      new ObjectId(args.contactId.toString())
+    );
+    return formatResponse({ contact });
+  }
+
+  if (args.relationship) {
+    // 根据关系查询
+    const contacts = await contactsModel.getContactsByRelationship(
+      args.relationship as string
+    );
+    return formatResponse({ contacts });
+  }
+
+  if (args.tag) {
+    // 根据标签查询
+    const contacts = await contactsModel.getContactsByTag(args.tag as string);
+    return formatResponse({ contacts });
+  }
+
+  if (args.school) {
+    // 根据学校查询
+    const contacts = await contactsModel.getContactsBySchool(
+      args.school as string
+    );
+    return formatResponse({ contacts });
+  }
+
+  if (args.hukou) {
+    // 根据户籍查询
+    const contacts = await contactsModel.getContactsByHukou(
+      args.hukou as string
+    );
+    return formatResponse({ contacts });
+  }
+
+  if (args.search) {
+    // 搜索联系人
+    const contacts = await contactsModel.findContacts(args.search as string);
+    return formatResponse({ contacts });
+  }
+
+  throw new Error("查询联系人需要提供有效的查询参数");
+}
+
+/**
+ * 处理查询生物数据
+ * @param db 数据库实例
+ * @param args 参数
+ * @returns 查询结果
+ */
+async function handleQueryBioData(db: Db, args: Record<string, unknown>) {
+  const bioDataModel = new BioDataModel(db);
+
+  // 处理不同的查询参数
+  if (args.recordId) {
+    // 根据ID查询
+    const record = await bioDataModel.getRecordById(
+      new ObjectId(args.recordId.toString())
+    );
+    return formatResponse({ record });
+  }
+
+  if (args.measurementType && args.stats) {
+    // 获取统计信息
+    const stats = await bioDataModel.getMeasurementStats(
+      args.measurementType as string
+    );
+    return formatResponse({ stats });
+  }
+
+  if (args.measurementType && args.history) {
+    // 获取历史记录
+    const limit = (args.limit as number) || 10;
+    const history = await bioDataModel.getMeasurementHistory(
+      args.measurementType as string,
+      limit
+    );
+    return formatResponse({ history });
+  }
+
+  if (args.measurementTypes) {
+    // 获取所有测量类型
+    const types = await bioDataModel.getAllMeasurementTypes();
+    return formatResponse({ types });
+  }
+
+  if (args.search) {
+    // 搜索记录
+    const records = await bioDataModel.searchRecords(args.search as string);
+    return formatResponse({ records });
+  }
+
+  throw new Error("查询生物数据需要提供有效的查询参数");
+}
+
+/**
+ * 处理查询任务
+ * @param db 数据库实例
+ * @param args 参数
+ * @returns 查询结果
+ */
+async function handleQueryTask(db: Db, args: Record<string, unknown>) {
+  const tasksModel = new TasksModel(db);
+
+  // 处理不同的查询参数
+  if (args.taskId) {
+    // 根据ID查询
+    const task = await tasksModel.getTaskById(
+      new ObjectId(args.taskId.toString())
+    );
+    return formatResponse({ task });
+  }
+
+  if (args.tag) {
+    // 根据标签查询
+    const tasks = await tasksModel.getTasksByTag(args.tag as string);
+    return formatResponse({ tasks });
+  }
+
+  if (args.taskType) {
+    // 根据任务类型查询
+    const tasks = await tasksModel.getTasksByType(args.taskType as string);
+    return formatResponse({ tasks });
+  }
+
+  if (args.upcoming) {
+    // 获取即将到期的任务
+    const days = typeof args.days === "number" ? args.days : 7;
+    const tasks = await tasksModel.getUpcomingTasks(days);
+    return formatResponse({ tasks });
+  }
+
+  if (args.overdue) {
+    // 获取逾期任务
+    const tasks = await tasksModel.getOverdueTasks();
+    return formatResponse({ tasks });
+  }
+
+  if (args.allTasks) {
+    // 获取所有任务
+    const query = (args.query as any) || {};
+    const limit = (args.limit as number) || 20;
+    const tasks = await tasksModel.getAllTasks(query, limit);
+    return formatResponse({ tasks });
+  }
+
+  throw new Error("查询任务需要提供有效的查询参数");
+}
+
+/**
+ * 处理获取最新生物数据
+ * @param db 数据库实例
+ * @param args 参数
+ * @returns 查询结果
+ */
+async function handleGetLatestBioData(db: Db, args: Record<string, unknown>) {
+  const bioDataModel = new BioDataModel(db);
+
+  const measurementType = args.measurementType as string;
+
+  if (!measurementType) {
+    throw new Error("获取最新生物数据需要提供测量类型");
+  }
+
+  const record = await bioDataModel.getLatestMeasurement(measurementType);
+
+  if (!record) {
+    return formatResponse({
+      success: false,
+      message: `未找到"${measurementType}"类型的测量记录`,
+    });
+  }
+
+  let message = `${record.measurementType}: ${record.value}`;
+
+  if (record.unit) {
+    message += ` ${record.unit}`;
+  }
+
+  if (record.measuredAt) {
+    const date = new Date(record.measuredAt);
+    message += ` (测量于 ${date.toLocaleDateString()})`;
+  }
+
+  return formatResponse({
+    success: true,
+    message,
+    record,
+  });
+}
+
+/**
+ * 处理获取待办任务
+ * @param db 数据库实例
+ * @param args 参数
+ * @returns 查询结果
+ */
+async function handleGetPendingTasks(db: Db, args: Record<string, unknown>) {
+  const tasksModel = new TasksModel(db);
+
+  const limit = (args.limit as number) || 10;
+  const tasks = await tasksModel.getPendingTasks(limit);
+
+  if (tasks.length === 0) {
+    return formatResponse({
+      success: true,
+      message: "当前没有待办任务",
+      tasks: [],
+    });
+  }
+
+  // 构建简洁的任务列表
+  let message = `共有 ${tasks.length} 个待办任务:\n`;
+
+  for (let i = 0; i < tasks.length; i++) {
+    const task = tasks[i];
+    message += `${i + 1}. ${task.name}`;
+
+    if (task.priority) {
+      message += ` [优先级: ${task.priority}]`;
+    }
+
+    if (task.dueDate) {
+      const dueDate = new Date(task.dueDate);
+      const now = new Date();
+
+      if (dueDate < now) {
+        message += " [已逾期]";
+      } else {
+        // 计算剩余天数
+        const daysRemaining = Math.ceil(
+          (dueDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)
+        );
+
+        if (daysRemaining <= 1) {
+          message += " [今天到期]";
+        } else if (daysRemaining <= 3) {
+          message += " [即将到期]";
+        }
+      }
+    }
+
+    message += "\n";
+  }
+
+  return formatResponse({
+    success: true,
+    message: message.trim(),
+    tasks,
+  });
+}
+
+/**
+ * 格式化响应为标准格式
+ * @param data 响应数据
+ * @returns 格式化后的响应
+ */
+function formatResponse(data: any): {
+  content: [{ type: string; text: string }];
+} {
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(
+          data,
+          (key, value) => {
+            // 处理ObjectId转换为字符串
+            if (value instanceof ObjectId) {
+              return value.toString();
+            }
+            return value;
+          },
+          2
+        ),
+      },
+    ],
+  };
+}

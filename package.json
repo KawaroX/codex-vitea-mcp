@@ -1,0 +1,59 @@
+{
+  "name": "codex-vitea-mcp",
+  "version": "0.1.0",
+  "description": "专为ViteaOS个人信息管理系统设计的MCP服务器",
+  "private": false,
+  "type": "module",
+  "bin": {
+    "vitea-mcp": "./build/index.js"
+  },
+  "files": [
+    "build"
+  ],
+  "scripts": {
+    "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', '755')\"",
+    "prepare": "npm run build",
+    "watch": "tsc --watch",
+    "start": "node build/index.js",
+    "dev": "npm run build && npm run start",
+    "inspector": "npx @modelcontextprotocol/inspector build/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.10.2",
+    "@types/mongodb": "^4.0.6",
+    "mongodb": "^6.16.0",
+    "zod": "^3.24.3"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.1",
+    "@types/morgan": "^1.9.9",
+    "@types/node": "^20.11.24",
+    "nodemon": "^3.1.10",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "claude",
+    "claude-desktop",
+    "mcp",
+    "mongo",
+    "mongodb",
+    "model-context-protocol",
+    "llm",
+    "vitea",
+    "viteaos",
+    "PIM",
+    "personal-information-management"
+  ],
+  "author": "KawaroX <kawaro499@outlook.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/KawaroX/codex-vitea-mcp"
+  },
+  "homepage": "https://github.com/KawaroX/codex-vitea-mcp"
+}
