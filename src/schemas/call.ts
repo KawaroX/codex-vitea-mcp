@@ -2,6 +2,10 @@ import type { CallToolRequest } from "@modelcontextprotocol/sdk/types.js";
 import type { Db, MongoClient } from "mongodb";
 import { FindItemTool } from "../tools/findItem.js";
 import { EstimateTimeTool } from "../tools/estimateTime.js";
+import { TransferItemTool } from "../tools/transferItem.js";
+import { UpdateTaskStatusTool } from "../tools/updateTaskStatus.js";
+import { AddStructuredNoteTool } from "../tools/addStructuredNote.js";
+import { SearchNotesTool } from "../tools/searchNotes.js";
 import { ItemsModel } from "../model/items.js";
 import { LocationsModel } from "../model/locations.js";
 import { ContactsModel } from "../model/contacts.js";
@@ -20,10 +24,14 @@ type MongoOperation =
   | "query_biodata" // 查询生物数据
   | "query_task" // 查询任务
   | "get_latest_biodata" // 获取最新生物数据
-  | "get_pending_tasks"; // 获取待办任务
+  | "get_pending_tasks" // 获取待办任务
+  | "transfer_item"
+  | "update_task_status"
+  | "add_structured_note"
+  | "search_notes"; // 转移物品
 
 // 不允许在只读模式下执行的操作
-const WRITE_OPERATIONS = ["update_item"];
+const WRITE_OPERATIONS = ["update_item", "transfer_item"];
 
 // ObjectId 转换模式
 type ObjectIdConversionMode = "auto" | "none" | "force";
@@ -63,6 +71,8 @@ export async function handleCallToolRequest({
         return await handleUpdateItem(db, args);
       case "query_item":
         return await handleQueryItem(db, args);
+      case "transfer_item":
+        return await handleTransferItem(db, args);
       case "query_location":
         return await handleQueryLocation(db, args);
       case "query_contact":
@@ -71,10 +81,16 @@ export async function handleCallToolRequest({
         return await handleQueryBioData(db, args);
       case "query_task":
         return await handleQueryTask(db, args);
+      case "update_task_status":
+        return await handleUpdateTaskStatus(db, args);
       case "get_latest_biodata":
         return await handleGetLatestBioData(db, args);
       case "get_pending_tasks":
         return await handleGetPendingTasks(db, args);
+      case "add_structured_note":
+        return await handleAddStructuredNote(db, args);
+      case "search_notes":
+        return await handleSearchNotes(db, args);
       default:
         throw new Error(`未知操作: ${operation}`);
     }
@@ -443,6 +459,51 @@ async function handleQueryTask(db: Db, args: Record<string, unknown>) {
 }
 
 /**
+ * 处理更新任务状态
+ * @param db 数据库实例
+ * @param args 参数
+ * @returns 更新结果
+ */
+async function handleUpdateTaskStatus(db: Db, args: Record<string, unknown>) {
+  const updateTaskStatusTool = new UpdateTaskStatusTool(db);
+
+  // 验证参数
+  if (!args.taskId && !args.taskName) {
+    throw new Error("更新任务状态需要提供任务ID或名称");
+  }
+
+  if (!args.newStatus) {
+    throw new Error("更新任务状态需要提供新状态");
+  }
+
+  // 解析参数
+  const params = {
+    taskId: args.taskId as string,
+    taskName: args.taskName as string,
+    newStatus: args.newStatus as string,
+    comment: args.comment as string,
+  };
+
+  // 执行状态更新
+  const result = await updateTaskStatusTool.execute(params);
+
+  // 格式化响应
+  if (!result.success) {
+    return formatResponse({
+      success: false,
+      message: result.message || result.error || "更新任务状态失败",
+      error: result.error,
+    });
+  }
+
+  return formatResponse({
+    success: true,
+    message: result.message,
+    task: result.task,
+  });
+}
+
+/**
  * 处理获取最新生物数据
  * @param db 数据库实例
  * @param args 参数
@@ -571,4 +632,161 @@ function formatResponse(data: any): {
       },
     ],
   };
+}
+
+/**
+ * 处理物品转移
+ * @param db 数据库实例
+ * @param args 参数
+ * @returns 转移结果
+ */
+async function handleTransferItem(db: Db, args: Record<string, unknown>) {
+  const transferItemTool = new TransferItemTool(db);
+
+  // 验证参数
+  if (!args.itemId && !args.itemName) {
+    throw new Error("物品转移需要提供物品ID或名称");
+  }
+
+  if (
+    !args.targetLocationId &&
+    !args.targetLocationName &&
+    !args.targetContainerId &&
+    !args.targetContainerName
+  ) {
+    throw new Error("物品转移需要提供目标位置或容器");
+  }
+
+  // 解析参数
+  const params = {
+    itemId: args.itemId as string,
+    itemName: args.itemName as string,
+    targetLocationId: args.targetLocationId as string,
+    targetLocationName: args.targetLocationName as string,
+    targetContainerId: args.targetContainerId as string,
+    targetContainerName: args.targetContainerName as string,
+    note: args.note as string,
+    removeFromCurrentContainer:
+      (args.removeFromCurrentContainer as boolean) ?? true,
+  };
+
+  // 执行转移
+  const result = await transferItemTool.execute(params);
+
+  // 格式化响应
+  if (!result.success) {
+    return formatResponse({
+      success: false,
+      message: result.message || result.error || "物品转移失败",
+      error: result.error,
+    });
+  }
+
+  return formatResponse({
+    success: true,
+    message: result.message,
+    item: result.item,
+  });
+}
+
+/**
+ * 处理添加结构化笔记
+ * @param db 数据库实例
+ * @param args 参数
+ * @returns 添加结果
+ */
+async function handleAddStructuredNote(db: Db, args: Record<string, unknown>) {
+  const addStructuredNoteTool = new AddStructuredNoteTool(db);
+
+  // 验证参数
+  if (!args.entityType) {
+    throw new Error("添加笔记需要提供实体类型");
+  }
+
+  if (!args.content) {
+    throw new Error("添加笔记需要提供内容");
+  }
+
+  if (!args.entityId && !args.entityName) {
+    throw new Error("添加笔记需要提供实体ID或名称");
+  }
+
+  // 解析参数
+  const params = {
+    entityType: args.entityType as string,
+    entityId: args.entityId as string,
+    entityName: args.entityName as string,
+    content: args.content as string,
+    tags: (args.tags as string[]) || [],
+    relatedEntities:
+      (args.relatedEntities as Array<{
+        type: string;
+        id?: string;
+        name?: string;
+      }>) || [],
+  };
+
+  // 执行添加笔记
+  const result = await addStructuredNoteTool.execute(params);
+
+  // 格式化响应
+  if (!result.success) {
+    return formatResponse({
+      success: false,
+      message: result.message || result.error || "添加笔记失败",
+      error: result.error,
+    });
+  }
+
+  return formatResponse({
+    success: true,
+    message: result.message,
+    note: result.note,
+  });
+}
+
+/**
+ * 处理搜索笔记
+ * @param db 数据库实例
+ * @param args 参数
+ * @returns 搜索结果
+ */
+async function handleSearchNotes(db: Db, args: Record<string, unknown>) {
+  const searchNotesTool = new SearchNotesTool(db);
+
+  // 验证参数
+  if (!args.tag && !args.entityType) {
+    throw new Error("搜索笔记需要提供标签或实体类型");
+  }
+
+  if (args.entityType && !args.entityId && !args.entityName) {
+    throw new Error("搜索实体笔记需要提供实体ID或名称");
+  }
+
+  // 解析参数
+  const params = {
+    tag: args.tag as string,
+    entityType: args.entityType as string,
+    entityId: args.entityId as string,
+    entityName: args.entityName as string,
+    limit: (args.limit as number) || 20,
+  };
+
+  // 执行搜索
+  const result = await searchNotesTool.execute(params);
+
+  // 格式化响应
+  if (!result.success) {
+    return formatResponse({
+      success: false,
+      message: result.message || result.error || "搜索笔记失败",
+      error: result.error,
+    });
+  }
+
+  return formatResponse({
+    success: true,
+    message: result.message,
+    results: result.results,
+  });
 }

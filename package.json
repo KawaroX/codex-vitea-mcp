@@ -1,6 +1,6 @@
 {
   "name": "codex-vitea-mcp",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "description": "专为ViteaOS个人信息管理系统设计的MCP服务器",
   "private": false,
   "type": "module",

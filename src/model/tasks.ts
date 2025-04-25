@@ -1,16 +1,20 @@
 import { type Collection, ObjectId, type Db } from "mongodb";
-import { Task, ensureObjectId } from "./types.js";
+import { Task, StructuredNote, ensureObjectId } from "./types.js";
+
+interface TaskWithStructuredNotes extends Omit<Task, "notes"> {
+  notes: StructuredNote[];
+}
 
 /**
  * 任务数据操作类
  */
 export class TasksModel {
-  private tasksCollection: Collection<Task>;
+  private tasksCollection: Collection<TaskWithStructuredNotes>;
   private db: Db;
 
   constructor(db: Db) {
     this.db = db;
-    this.tasksCollection = db.collection<Task>("tasks");
+    this.tasksCollection = db.collection<TaskWithStructuredNotes>("tasks");
   }
 
   /**
@@ -20,9 +24,9 @@ export class TasksModel {
    * @returns 任务列表
    */
   async getAllTasks(
-    query: Partial<Task> = {},
+    query: Record<string, any> = {},
     limit: number = 20
-  ): Promise<Task[]> {
+  ): Promise<TaskWithStructuredNotes[]> {
     return await this.tasksCollection
       .find(query)
       .sort({ dueDate: 1, priority: -1 })
@@ -35,7 +39,7 @@ export class TasksModel {
    * @param limit 限制返回任务数量
    * @returns 待办任务列表
    */
-  async getPendingTasks(limit: number = 10): Promise<Task[]> {
+  async getPendingTasks(limit: number = 10): Promise<TaskWithStructuredNotes[]> {
     return await this.tasksCollection
       .find({ status: { $ne: "已完成" } })
       .sort({ dueDate: 1, priority: -1 })
@@ -48,7 +52,7 @@ export class TasksModel {
    * @param daysThreshold 到期天数阈值
    * @returns 即将到期的任务列表
    */
-  async getUpcomingTasks(daysThreshold: number = 7): Promise<Task[]> {
+  async getUpcomingTasks(daysThreshold: number = 7): Promise<TaskWithStructuredNotes[]> {
     const now = new Date();
     const thresholdDate = new Date();
     thresholdDate.setDate(now.getDate() + daysThreshold);
@@ -69,7 +73,7 @@ export class TasksModel {
    * 获取逾期任务
    * @returns 逾期任务列表
    */
-  async getOverdueTasks(): Promise<Task[]> {
+  async getOverdueTasks(): Promise<TaskWithStructuredNotes[]> {
     const now = new Date();
 
     return await this.tasksCollection
@@ -86,7 +90,7 @@ export class TasksModel {
    * @param taskId 任务ID
    * @returns 任务对象
    */
-  async getTaskById(taskId: ObjectId): Promise<Task | null> {
+  async getTaskById(taskId: ObjectId): Promise<TaskWithStructuredNotes | null> {
     const id = ensureObjectId(taskId);
     return await this.tasksCollection.findOne({ _id: id });
   }
@@ -96,7 +100,7 @@ export class TasksModel {
    * @param tag 标签
    * @returns 匹配的任务列表
    */
-  async getTasksByTag(tag: string): Promise<Task[]> {
+  async getTasksByTag(tag: string): Promise<TaskWithStructuredNotes[]> {
     return await this.tasksCollection
       .find({ tags: tag })
       .sort({ dueDate: 1, priority: -1 })
@@ -108,9 +112,9 @@ export class TasksModel {
    * @param taskType 任务类型
    * @returns 匹配的任务列表
    */
-  async getTasksByType(taskType: string): Promise<Task[]> {
+  async getTasksByType(taskType: string): Promise<TaskWithStructuredNotes[]> {
     return await this.tasksCollection
-      .find({ taskType: new RegExp(taskType, "i") })
+      .find({ taskType: { $regex: taskType, $options: "i" } })
       .sort({ dueDate: 1, priority: -1 })
       .toArray();
   }
@@ -120,9 +124,9 @@ export class TasksModel {
    * @param taskData 任务数据
    * @returns 操作结果
    */
-  async addTask(taskData: Partial<Task>): Promise<{
+  async addTask(taskData: Partial<TaskWithStructuredNotes>): Promise<{
     success: boolean;
-    task?: Task;
+    task?: TaskWithStructuredNotes;
     error?: string;
   }> {
     try {
@@ -134,7 +138,7 @@ export class TasksModel {
       }
 
       // 添加通用字段
-      const newTask: Partial<Task> = {
+      const newTask: Partial<TaskWithStructuredNotes> = {
         ...taskData,
         status: taskData.status || "未开始",
         syncedToNotion: false,
@@ -171,50 +175,92 @@ export class TasksModel {
   /**
    * 更新任务状态
    * @param taskId 任务ID
-   * @param status 新状态
-   * @returns 操作结果
+   * @param newStatus 新状态
+   * @param comment 可选备注
+   * @returns 更新结果
    */
   async updateTaskStatus(
     taskId: string | ObjectId,
-    status: string
+    newStatus: string,
+    comment: string | null = null
   ): Promise<{
     success: boolean;
-    task?: Task;
+    task?: TaskWithStructuredNotes;
     error?: string;
   }> {
     try {
       const id = ensureObjectId(taskId);
 
-      // 获取任务
+      // 查询任务
       const task = await this.getTaskById(id);
 
       if (!task) {
         return { success: false, error: "未找到任务" };
       }
 
-      // 更新状态和相关字段
-      const updateData: any = {
-        status,
+      const oldStatus = task.status;
+
+      // 如果状态没有变化，则直接返回
+      if (oldStatus === newStatus) {
+        return {
+          success: true,
+          task,
+          error: "任务状态未变化",
+        };
+      }
+
+      // 创建更新对象
+      const updateObj: any = {
+        status: newStatus,
         updatedAt: new Date(),
         modifiedSinceSync: true,
       };
 
-      // 如果标记为完成，计算是否逾期
-      if (status === "已完成" && task.dueDate) {
-        const dueDate = new Date(task.dueDate);
+      // 如果标记为完成，更新完成时间和逾期状态
+      if (newStatus === "已完成") {
         const now = new Date();
-        updateData.isOverdue = dueDate < now;
+        updateObj.completedAt = now;
+
+        // 检查是否逾期
+        if (task.dueDate && new Date(task.dueDate) < now) {
+          updateObj.isOverdue = true;
+        } else {
+          updateObj.isOverdue = false;
+        }
       }
 
-      // 执行更新
-      const result = await this.tasksCollection.updateOne(
+      // 创建状态变更备注
+      const timestamp = new Date().toISOString().split("T")[0]; // 格式为 YYYY-MM-DD
+      const noteContent =
+        comment || `任务状态由"${oldStatus}"变更为"${newStatus}"`;
+
+      const noteObj = {
+        timestamp: timestamp,
+        content: noteContent,
+        metadata: {
+          type: "status_change",
+          previousStatus: oldStatus,
+          newStatus: newStatus,
+          tags: ["status_change"],
+        },
+      };
+
+      // 确保notes数组存在且类型正确
+      if (!task.notes || typeof task.notes === "string") {
+        await this.tasksCollection.updateOne(
+          { _id: id },
+          { $set: { notes: [] } }
+        );
+      }
+
+      // 添加备注并更新状态
+      await this.tasksCollection.updateOne(
         { _id: id },
-        { $set: updateData }
+        {
+          $push: { notes: noteObj },
+          $set: updateObj,
+        }
       );
-
-      if (result.matchedCount === 0) {
-        return { success: false, error: "更新任务状态失败" };
-      }
 
       // 查询更新后的任务
       const updatedTask = await this.getTaskById(id);
@@ -232,6 +278,14 @@ export class TasksModel {
   }
 
   /**
+   * 获取有效的任务状态列表
+   * @returns 状态列表
+   */
+  async getValidTaskStatuses(): Promise<string[]> {
+    return ["未开始", "进行中", "已完成", "已取消", "已暂停", "待审核"];
+  }
+
+  /**
    * 更新任务
    * @param taskId 任务ID
    * @param updateData 要更新的字段
@@ -239,10 +293,10 @@ export class TasksModel {
    */
   async updateTask(
     taskId: string | ObjectId,
-    updateData: Partial<Task>
+    updateData: Partial<TaskWithStructuredNotes>
   ): Promise<{
     success: boolean;
-    task?: Task;
+    task?: TaskWithStructuredNotes;
     error?: string;
   }> {
     try {

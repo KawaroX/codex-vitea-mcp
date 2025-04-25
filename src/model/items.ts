@@ -63,7 +63,10 @@ export class ItemsModel {
     let item: Item | null = null;
 
     // 如果输入看起来像一个ObjectId，则通过ID查询
-    if (typeof itemId === "string" && /^[0-9a-fA-F]{24}$/.test(itemId)) {
+    if (
+      typeof itemId.toString() === "string" &&
+      /^[0-9a-fA-F]{24}$/.test(itemId.toString())
+    ) {
       item = await this.getItemById(new ObjectId(itemId.toString()));
     }
     // 否则尝试按名称查询
@@ -254,7 +257,7 @@ export class ItemsModel {
       }
 
       // 查询更新后的物品
-      const updatedItem = await this.getItemById(new ObjectId(id.toString()));
+      const updatedItem = await this.getItemById(id);
 
       return {
         success: true,
@@ -284,5 +287,195 @@ export class ItemsModel {
       .toArray();
 
     return missingItems;
+  }
+
+  /**
+   * 物品转移功能 - 将物品从一个位置/容器转移到另一个位置/容器
+   * @param itemId 物品ID
+   * @param targetLocationId 目标位置ID (如果需要更改位置)
+   * @param targetContainerId 目标容器ID (如果需要放入容器)
+   * @param note 用户提供的备注
+   * @param removeFromCurrentContainer 是否从当前容器中移除
+   * @returns 更新结果
+   */
+  async transferItem(
+    itemId: string | ObjectId,
+    targetLocationId: string | ObjectId | null = null,
+    targetContainerId: string | ObjectId | null = null,
+    note: string | null = null,
+    removeFromCurrentContainer: boolean = true
+  ): Promise<{
+    success: boolean;
+    item?: Item;
+    error?: string;
+  }> {
+    try {
+      // 确保 itemId 是 ObjectId 类型
+      const id = ensureObjectId(itemId);
+
+      // 查询物品当前信息
+      const item = await this.getItemById(id);
+
+      if (!item) {
+        return { success: false, error: "未找到物品" };
+      }
+
+      // 准备更新对象
+      const updateObj: any = {
+        updatedAt: new Date(),
+        modifiedSinceSync: true, // 设置 Notion 同步标记
+      };
+
+      // 记录转移前的状态，用于生成备注
+      const previousState = {
+        locationId: item.locationId,
+        containerId: item.containerId,
+      };
+
+      // 如果提供了目标位置，更新位置ID
+      if (targetLocationId) {
+        updateObj.locationId = ensureObjectId(targetLocationId);
+      }
+
+      // 如果提供了目标容器，更新容器ID
+      if (targetContainerId) {
+        updateObj.containerId = ensureObjectId(targetContainerId);
+      } else if (removeFromCurrentContainer && item.containerId) {
+        // 如果未提供新容器但需要从当前容器移除
+        updateObj.containerId = null;
+      }
+
+      // 创建结构化备注
+      const timestamp = new Date().toISOString().split("T")[0]; // 格式为 YYYY-MM-DD
+      const noteContent =
+        note ||
+        `物品「${item.name}」${previousState.containerId ? "从容器中" : ""}${
+          previousState.locationId
+            ? `从位置「${await this.getLocationName(
+                previousState.locationId
+              )}」`
+            : ""
+        } 
+      转移到${
+        targetContainerId
+          ? `容器「${await this.getContainerName(targetContainerId)}」中`
+          : ""
+      }${
+          targetLocationId
+            ? `位置「${await this.getLocationName(targetLocationId)}」`
+            : ""
+        }`;
+
+      const noteObj = {
+        timestamp: timestamp,
+        content: noteContent,
+        metadata: {
+          locationId: targetLocationId
+            ? ensureObjectId(targetLocationId)
+            : undefined,
+          containerId: targetContainerId
+            ? ensureObjectId(targetContainerId)
+            : undefined,
+          tags: [
+            "transfer",
+            previousState.locationId ? "from_location" : "",
+            previousState.containerId ? "from_container" : "",
+            targetLocationId ? "to_location" : "",
+            targetContainerId ? "to_container" : "",
+          ].filter((tag) => tag !== ""), // 过滤掉空字符串
+        },
+      };
+
+      // 添加结构化备注
+      await this.itemsCollection.updateOne(
+        { _id: id },
+        {
+          $push: { notes: noteObj },
+          $set: updateObj,
+        }
+      );
+
+      // 如果从一个容器移到另一个容器，更新容器的 containedItems
+      if (previousState.containerId && removeFromCurrentContainer) {
+        // 从旧容器移除
+        await this.itemsCollection.updateOne(
+          { _id: ensureObjectId(previousState.containerId) },
+          {
+            $pull: { containedItems: id },
+            $set: {
+              updatedAt: new Date(),
+              modifiedSinceSync: true,
+            },
+          }
+        );
+      }
+
+      if (targetContainerId) {
+        // 添加到新容器
+        await this.itemsCollection.updateOne(
+          { _id: ensureObjectId(targetContainerId) },
+          {
+            $addToSet: { containedItems: id },
+            $set: {
+              updatedAt: new Date(),
+              modifiedSinceSync: true,
+            },
+          }
+        );
+      }
+
+      // 查询更新后的物品
+      const updatedItem = await this.getItemById(id);
+
+      return {
+        success: true,
+        item: updatedItem || undefined,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: `转移物品失败: ${error}`,
+      };
+    }
+  }
+
+  /**
+   * 获取位置名称
+   * @param locationId 位置ID
+   * @returns 位置名称
+   */
+  private async getLocationName(
+    locationId: string | ObjectId
+  ): Promise<string> {
+    try {
+      const id = ensureObjectId(locationId);
+      const location = await this.locationsCollection.findOne(
+        { _id: id },
+        { projection: { name: 1 } }
+      );
+      return location?.name || "未知位置";
+    } catch (error) {
+      return "未知位置";
+    }
+  }
+
+  /**
+   * 获取容器名称
+   * @param containerId 容器ID
+   * @returns 容器名称
+   */
+  private async getContainerName(
+    containerId: string | ObjectId
+  ): Promise<string> {
+    try {
+      const id = ensureObjectId(containerId);
+      const container = await this.itemsCollection.findOne(
+        { _id: id },
+        { projection: { name: 1 } }
+      );
+      return container?.name || "未知容器";
+    } catch (error) {
+      return "未知容器";
+    }
   }
 }

@@ -23,6 +23,8 @@ export interface StructuredNote {
     containerId?: ObjectId | string | null;
     locationId?: ObjectId | string | null;
     tags?: string[];
+    // 允许任何其他字段
+    [key: string]: any;
   };
 }
 

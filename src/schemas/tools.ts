@@ -263,9 +263,53 @@ export async function handleListToolsRequest({
         ],
       },
     },
+    // 搜索笔记工具
+    {
+      name: "search_notes",
+      description: "搜索带有特定标签的笔记或实体的笔记",
+      inputSchema: {
+        type: "object",
+        properties: {
+          tag: {
+            type: "string",
+            description: "标签",
+          },
+          entityType: {
+            type: "string",
+            description: "实体类型(item, location, contact, task, biodata)",
+          },
+          entityId: {
+            type: "string",
+            description: "实体ID",
+          },
+          entityName: {
+            type: "string",
+            description: "实体名称（如果未提供ID）",
+          },
+          limit: {
+            type: "integer",
+            description: "限制返回笔记数量",
+            default: 20,
+          },
+        },
+        oneOf: [
+          { required: ["tag"] },
+          {
+            allOf: [
+              { required: ["entityType"] },
+              {
+                oneOf: [
+                  { required: ["entityId"] },
+                  { required: ["entityName"] },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    },
   ];
 
-  // 非只读模式添加更新工具
   if (!isReadOnlyMode) {
     viteaTools.push({
       name: "update_item",
@@ -298,6 +342,145 @@ export async function handleListToolsRequest({
         ],
       },
     });
+
+    viteaTools.push(
+      {
+        name: "transfer_item",
+        description: "转移物品到新的位置或容器",
+        inputSchema: {
+          type: "object",
+          properties: {
+            itemId: {
+              type: "string",
+              description: "物品ID",
+            },
+            itemName: {
+              type: "string",
+              description: "物品名称（如果未提供ID）",
+            },
+            targetLocationId: {
+              type: "string",
+              description: "目标位置ID",
+            },
+            targetLocationName: {
+              type: "string",
+              description: "目标位置名称（如果未提供ID）",
+            },
+            targetContainerId: {
+              type: "string",
+              description: "目标容器ID",
+            },
+            targetContainerName: {
+              type: "string",
+              description: "目标容器名称（如果未提供ID）",
+            },
+            note: {
+              type: "string",
+              description: "转移备注（可选）",
+            },
+            removeFromCurrentContainer: {
+              type: "boolean",
+              description: "是否从当前容器中移除物品（默认为true）",
+              default: true,
+            },
+          },
+          oneOf: [{ required: ["itemId"] }, { required: ["itemName"] }],
+          anyOf: [
+            { required: ["targetLocationId"] },
+            { required: ["targetLocationName"] },
+            { required: ["targetContainerId"] },
+            { required: ["targetContainerName"] },
+          ],
+        },
+      } as any,
+      // 在 viteaTools 数组中添加
+      {
+        name: "update_task_status",
+        description: "更新任务状态并记录状态变更历史",
+        inputSchema: {
+          type: "object",
+          properties: {
+            taskId: {
+              type: "string",
+              description: "任务ID",
+            },
+            taskName: {
+              type: "string",
+              description: "任务名称（如果未提供ID）",
+            },
+            newStatus: {
+              type: "string",
+              description:
+                "新状态（未开始、进行中、已完成、已取消、已暂停、待审核）",
+            },
+            comment: {
+              type: "string",
+              description: "状态变更备注（可选）",
+            },
+          },
+          required: ["newStatus"],
+          oneOf: [{ required: ["taskId"] }, { required: ["taskName"] }],
+        },
+      } as any,
+      // 添加结构化笔记工具
+      {
+        name: "add_structured_note",
+        description: "为任何实体添加带标签和关联的结构化笔记",
+        inputSchema: {
+          type: "object",
+          properties: {
+            entityType: {
+              type: "string",
+              description: "实体类型(item, location, contact, task, biodata)",
+            },
+            entityId: {
+              type: "string",
+              description: "实体ID",
+            },
+            entityName: {
+              type: "string",
+              description: "实体名称（如果未提供ID）",
+            },
+            content: {
+              type: "string",
+              description: "笔记内容",
+            },
+            tags: {
+              type: "array",
+              items: {
+                type: "string",
+              },
+              description: "标签数组（可选）",
+            },
+            relatedEntities: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  type: {
+                    type: "string",
+                    description:
+                      "相关实体类型(item, location, contact, task, biodata)",
+                  },
+                  id: {
+                    type: "string",
+                    description: "相关实体ID",
+                  },
+                  name: {
+                    type: "string",
+                    description: "相关实体名称（如果未提供ID）",
+                  },
+                },
+                required: ["type"],
+              },
+              description: "相关实体数组（可选）",
+            },
+          },
+          required: ["entityType", "content"],
+          oneOf: [{ required: ["entityId"] }, { required: ["entityName"] }],
+        },
+      } as any
+    );
   }
 
   // 添加便捷工具

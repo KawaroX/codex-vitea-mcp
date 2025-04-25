@@ -25,7 +25,7 @@ export function printWelcomeBanner(): void {
     `                                                                                     `
   );
   console.log(
-    `               🧠 ViteaOS MCP - 个人信息管理系统 MCP 服务器 v0.1.0 🧠               `
+    `               🧠 ViteaOS MCP - 个人信息管理系统 MCP 服务器 v0.1.3 🧠               `
   );
   console.log(
     `                                                                                     `

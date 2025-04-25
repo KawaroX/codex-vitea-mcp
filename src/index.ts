@@ -12,7 +12,7 @@ let mongoClient: MongoClient | null = null;
  * 使用stdio传输启动服务器并初始化MongoDB连接
  */
 async function main() {
-  printWelcomeBanner();
+  // printWelcomeBanner();
 
   const args = process.argv.slice(2);
   // 默认使用环境变量
