@@ -15,7 +15,7 @@ let mongoClient: MongoClient | null = null;
  */
 // 修改 index.ts 文件中的 main 函数
 async function main() {
-  // printWelcomeBanner();
+  printWelcomeBanner();
 
   const args = process.argv.slice(2);
   // 默认使用环境变量

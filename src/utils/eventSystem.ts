@@ -23,49 +23,13 @@ export const expirationRules: Record<string, ExpirationRule> = {
           entityId: event.entityId,
         },
       },
-      // 只影响位置相关的记忆
-      "resultInfo.tags": { $in: ["item_location"] }
     },
-    action: "reduce_confidence",
+    action: "expire", // 直接过期以确保安全
   }),
 
   // 物品更新规则 - 根据变更类型处理
   "item.updated": (event: EntityChangeEvent) => {
-    const isStatusChange = event.details?.statusChanged;
-    const isLocationChange = event.details?.locationChanged;
-    
     // 状态变更直接使记忆过期
-    if (isStatusChange) {
-      return {
-        query: {
-          entityDependencies: {
-            $elemMatch: {
-              entityType: "item",
-              entityId: event.entityId,
-            },
-          },
-        },
-        action: "expire",
-      };
-    }
-    
-    // 位置变更降低置信度
-    if (isLocationChange) {
-      return {
-        query: {
-          entityDependencies: {
-            $elemMatch: {
-              entityType: "item",
-              entityId: event.entityId,
-            },
-          },
-          "resultInfo.tags": { $in: ["item_location"] }
-        },
-        action: "reduce_confidence",
-      };
-    }
-
-    // 默认处理 - 降低置信度
     return {
       query: {
         entityDependencies: {
@@ -75,22 +39,22 @@ export const expirationRules: Record<string, ExpirationRule> = {
           },
         },
       },
-      action: "reduce_confidence",
+      action: "expire",
     };
   },
 
-  // 物品删除规则
-  "item.deleted": (event: EntityChangeEvent) => ({
-    query: {
-      entityDependencies: {
-        $elemMatch: {
-          entityType: "item",
-          entityId: event.entityId,
-        },
-      },
-    },
-    action: "expire",
-  }),
+  // // 物品删除规则
+  // "item.deleted": (event: EntityChangeEvent) => ({
+  //   query: {
+  //     entityDependencies: {
+  //       $elemMatch: {
+  //         entityType: "item",
+  //         entityId: event.entityId,
+  //       },
+  //     },
+  //   },
+  //   action: "expire",
+  // }),
 
   // 位置更新规则
   "location.updated": (event: EntityChangeEvent) => ({
@@ -105,18 +69,18 @@ export const expirationRules: Record<string, ExpirationRule> = {
     action: "reduce_confidence",
   }),
 
-  // 位置删除规则
-  "location.deleted": (event: EntityChangeEvent) => ({
-    query: {
-      entityDependencies: {
-        $elemMatch: {
-          entityType: "location",
-          entityId: event.entityId,
-        },
-      },
-    },
-    action: "expire",
-  }),
+  // // 位置删除规则
+  // "location.deleted": (event: EntityChangeEvent) => ({
+  //   query: {
+  //     entityDependencies: {
+  //       $elemMatch: {
+  //         entityType: "location",
+  //         entityId: event.entityId,
+  //       },
+  //     },
+  //   },
+  //   action: "expire",
+  // }),
 
   // 任务状态变更规则
   "task.statusChanged": (event: EntityChangeEvent) => ({
@@ -128,7 +92,7 @@ export const expirationRules: Record<string, ExpirationRule> = {
         },
       },
     },
-    action: "expire",
+    action: "expire", // 直接过期
   }),
 
   // 任务更新规则
@@ -141,21 +105,21 @@ export const expirationRules: Record<string, ExpirationRule> = {
         },
       },
     },
-    action: "reduce_confidence",
+    action: "expire", // 直接过期
   }),
 
-  // 任务删除规则
-  "task.deleted": (event: EntityChangeEvent) => ({
-    query: {
-      entityDependencies: {
-        $elemMatch: {
-          entityType: "task",
-          entityId: event.entityId,
-        },
-      },
-    },
-    action: "expire",
-  }),
+  // // 任务删除规则
+  // "task.deleted": (event: EntityChangeEvent) => ({
+  //   query: {
+  //     entityDependencies: {
+  //       $elemMatch: {
+  //         entityType: "task",
+  //         entityId: event.entityId,
+  //       },
+  //     },
+  //   },
+  //   action: "expire",
+  // }),
 
   // 联系人更新规则
   "contact.updated": (event: EntityChangeEvent) => ({
@@ -170,18 +134,18 @@ export const expirationRules: Record<string, ExpirationRule> = {
     action: "reduce_confidence",
   }),
 
-  // 联系人删除规则
-  "contact.deleted": (event: EntityChangeEvent) => ({
-    query: {
-      entityDependencies: {
-        $elemMatch: {
-          entityType: "contact",
-          entityId: event.entityId,
-        },
-      },
-    },
-    action: "expire",
-  }),
+  // // 联系人删除规则
+  // "contact.deleted": (event: EntityChangeEvent) => ({
+  //   query: {
+  //     entityDependencies: {
+  //       $elemMatch: {
+  //         entityType: "contact",
+  //         entityId: event.entityId,
+  //       },
+  //     },
+  //   },
+  //   action: "expire",
+  // }),
 
   // 生物数据更新规则
   "biodata.updated": (event: EntityChangeEvent) => ({
@@ -193,21 +157,21 @@ export const expirationRules: Record<string, ExpirationRule> = {
         },
       },
     },
-    action: "reduce_confidence",
+    action: "expire", // 直接过期
   }),
 
-  // 生物数据删除规则
-  "biodata.deleted": (event: EntityChangeEvent) => ({
-    query: {
-      entityDependencies: {
-        $elemMatch: {
-          entityType: "biodata",
-          entityId: event.entityId,
-        },
-      },
-    },
-    action: "expire",
-  }),
+  // // 生物数据删除规则
+  // "biodata.deleted": (event: EntityChangeEvent) => ({
+  //   query: {
+  //     entityDependencies: {
+  //       $elemMatch: {
+  //         entityType: "biodata",
+  //         entityId: event.entityId,
+  //       },
+  //     },
+  //   },
+  //   action: "expire",
+  // }),
 
   // 通用笔记添加规则
   "*.noteAdded": (event: EntityChangeEvent) => ({
@@ -219,7 +183,32 @@ export const expirationRules: Record<string, ExpirationRule> = {
         },
       },
     },
-    action: "reduce_confidence",
+    action: "reduce_confidence", // 降低置信度
+  }),
+
+  // 通用创建规则
+  "*.created": (event: EntityChangeEvent) => ({
+    query: {
+      entityDependencies: {
+        $elemMatch: {
+          entityType: event.entityType,
+        },
+      },
+    },
+    action: "reduce_confidence", // 降低相关实体的记忆置信度
+  }),
+
+  // 通用删除规则
+  "*.deleted": (event: EntityChangeEvent) => ({
+    query: {
+      entityDependencies: {
+        $elemMatch: {
+          entityType: event.entityType,
+          entityId: event.entityId,
+        },
+      },
+    },
+    action: "expire", // 直接过期
   }),
 };
 
@@ -245,6 +234,7 @@ export async function processEntityEvent(
     }
 
     if (!rule) {
+      console.log(`没有匹配的规则: ${specificRuleKey}`);
       return 0; // 无匹配规则
     }
 
@@ -261,15 +251,17 @@ export async function processEntityEvent(
           lastModified: new Date(),
         },
       });
+      console.log(`已使 ${result.modifiedCount} 条记忆过期`);
       return result.modifiedCount;
     } else if (action === "reduce_confidence") {
-      // 降低置信度到0.5（而不是乘以0.5）
+      // 降低置信度
       const result = await memoryCollection.updateMany(query, {
         $set: {
           "resultInfo.confidence": 0.5,
           lastModified: new Date(),
         },
       });
+      console.log(`已降低 ${result.modifiedCount} 条记忆的置信度`);
       return result.modifiedCount;
     }
 

@@ -1,6 +1,8 @@
 import { Db } from "mongodb";
 import { LocationsModel } from "../model/locations.js";
 import { TravelTimeEstimationResponse } from "../model/types.js";
+import { isImportantData } from "../utils/memoryUtils.js";
+import { MemoryModel } from "../model/memory.js";
 
 /**
  * 出行时间估算工具
@@ -8,9 +10,11 @@ import { TravelTimeEstimationResponse } from "../model/types.js";
  */
 export class EstimateTimeTool {
   private locationsModel: LocationsModel;
+  private memoryModel: MemoryModel;
 
   constructor(db: Db) {
     this.locationsModel = new LocationsModel(db);
+    this.memoryModel = new MemoryModel(db);
   }
 
   /**
@@ -26,7 +30,7 @@ export class EstimateTimeTool {
     try {
       const { origin, destination } = params;
 
-      // 验证参数
+      // 1. 验证参数
       if (!origin || !destination) {
         return {
           success: false,
@@ -34,7 +38,26 @@ export class EstimateTimeTool {
         };
       }
 
-      // 估算时间
+      // 2. 检查记忆 - 使用增强的记忆管理
+      const memoryResult = await this.memoryModel.findMemory(
+        "estimate_time",
+        {
+          origin,
+          destination,
+          _queryTime: Date.now(),
+        },
+        0.8
+      );
+
+      if (memoryResult) {
+        return {
+          success: true,
+          estimation: memoryResult.resultInfo.result.estimation,
+          message: "来自记忆的时间估算",
+        };
+      }
+
+      // 3. 估算时间
       const estimation = await this.locationsModel.estimateTravelTime(
         origin,
         destination
@@ -47,10 +70,31 @@ export class EstimateTimeTool {
         };
       }
 
-      return {
+      const result = {
         success: true,
         estimation,
       };
+
+      // 4. 存储结果到记忆
+      // 判断是否需要存储（不是特殊路线）
+      const isSpecialRoute = isImportantData("estimate_time", {
+        origin,
+        destination,
+      });
+
+      if (!isSpecialRoute) {
+        await this.memoryModel.storeMemory(
+          "estimate_time",
+          {
+            origin,
+            destination,
+            _queryTime: Date.now(),
+          },
+          result
+        );
+      }
+
+      return result;
     } catch (error) {
       console.error("估算时间时出错:", error);
       return {

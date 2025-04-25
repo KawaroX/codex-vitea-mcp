@@ -116,7 +116,7 @@ export function createServer(
           client,
           db,
           isReadOnlyMode,
-          schedulerManager,
+          schedulerManager: schedulerManager || null,
         })
       : handleCallToolRequest({
           request,

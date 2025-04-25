@@ -17,6 +17,7 @@ const INTERVALS = {
 export class SchedulerManager {
   private memoryModel: MemoryModel;
   private db: Db;
+  private memoryCollection: any;
   private schedulers: Map<string, NodeJS.Timeout> = new Map();
   private memoryStats: {
     total: number;
@@ -25,12 +26,20 @@ export class SchedulerManager {
     longTerm: number;
     expired: number;
     highConfidence: number;
+    mediumConfidence: number;
     lowConfidence: number;
     validated: number;
+    hitCount: number;
     lastCleanup: Date | null;
     lastStatsUpdate: Date | null;
     toolBreakdown?: any[];
     entityBreakdown?: any[];
+    toolDistribution?: any[];
+    performance?: {
+      hitRate: string;
+      averageConfidence: string;
+      cacheSavings: string;
+    };
   } = {
     total: 0,
     shortTerm: 0,
@@ -38,8 +47,10 @@ export class SchedulerManager {
     longTerm: 0,
     expired: 0,
     highConfidence: 0,
+    mediumConfidence: 0,
     lowConfidence: 0,
     validated: 0,
+    hitCount: 0,
     lastCleanup: null,
     lastStatsUpdate: null,
   };
@@ -47,6 +58,7 @@ export class SchedulerManager {
   constructor(db: Db) {
     this.db = db;
     this.memoryModel = new MemoryModel(db);
+    this.memoryCollection = db.collection("memories");
   }
 
   /**
@@ -97,14 +109,52 @@ export class SchedulerManager {
   /**
    * 清理过期的Memory
    */
+  // 更新 cleanupExpiredMemories 方法
   async cleanupExpiredMemories() {
     try {
       console.warn("正在清理过期Memory...");
 
-      // 清理已过期且置信度低的Memory
-      const deletedCount = await this.memoryModel.cleanupExpiredMemories();
+      // 1. 清理已过期且置信度低的Memory
+      const deleteResult = await this.memoryCollection.deleteMany({
+        $or: [
+          // 过期且置信度低于0.3的直接删除
+          {
+            "classification.expiresAt": { $lt: new Date() },
+            "resultInfo.confidence": { $lt: 0.3 },
+          },
+          // 长期未访问且不是长期缓存
+          {
+            "usageStats.lastAccessed": {
+              $lt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000), // 30天前
+            },
+            "classification.tier": { $ne: "long_term" },
+            "resultInfo.confidence": { $lt: 0.5 },
+          },
+        ],
+      });
 
-      console.warn(`已清理 ${deletedCount} 条过期Memory`);
+      console.warn(`已删除 ${deleteResult.deletedCount} 条过期Memory`);
+
+      // 2. 将过期但置信度高的记录降低置信度而非删除
+      const updateResult = await this.memoryCollection.updateMany(
+        {
+          "classification.expiresAt": { $lt: new Date() },
+          "resultInfo.confidence": { $gte: 0.3 },
+        },
+        {
+          $set: {
+            "resultInfo.confidence": 0.3,
+            "classification.tier": "short_term", // 降级为短期记忆
+            "classification.expiresAt": new Date(
+              Date.now() + 7 * 24 * 60 * 60 * 1000
+            ), // 延长7天
+          },
+        }
+      );
+
+      console.warn(
+        `已降级 ${updateResult.modifiedCount} 条过期但高置信度的Memory`
+      );
 
       // 更新最后清理时间
       this.memoryStats.lastCleanup = new Date();
@@ -171,6 +221,11 @@ export class SchedulerManager {
       this.memoryStats.highConfidence = await memoryCollection.countDocuments({
         "resultInfo.confidence": { $gte: 0.8 },
       });
+      this.memoryStats.mediumConfidence = await memoryCollection.countDocuments(
+        {
+          "resultInfo.confidence": { $gte: 0.5, $lt: 0.8 },
+        }
+      );
       this.memoryStats.lowConfidence = await memoryCollection.countDocuments({
         "resultInfo.confidence": { $lt: 0.5 },
       });
@@ -179,6 +234,27 @@ export class SchedulerManager {
       this.memoryStats.validated = await memoryCollection.countDocuments({
         "resultInfo.validated": true,
       });
+
+      // 获取命中次数信息
+      this.memoryStats.hitCount = await memoryCollection
+        .aggregate([
+          {
+            $group: {
+              _id: null,
+              totalHits: { $sum: "$usageStats.accessCount" },
+            },
+          },
+        ])
+        .toArray()
+        .then((result) => result[0]?.totalHits || 0);
+
+      // 获取每个工具的缓存数量
+      this.memoryStats.toolDistribution = await memoryCollection
+        .aggregate([
+          { $group: { _id: "$queryInfo.toolName", count: { $sum: 1 } } },
+          { $sort: { count: -1 } },
+        ])
+        .toArray();
 
       // 更新最后统计时间
       this.memoryStats.lastStatsUpdate = new Date();

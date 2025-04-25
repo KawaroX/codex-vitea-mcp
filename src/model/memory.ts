@@ -10,6 +10,10 @@ import {
   extractEntityDependencies,
   generateTags,
   generateTemplateHash,
+  categorizeRoute,
+  isImportantData,
+  categorizeItem,
+  calculateStringSimilarity,
 } from "../utils/memoryUtils.js";
 import { ensureObjectId } from "./types.js";
 
@@ -151,6 +155,13 @@ export interface EntityChangeEvent {
 export class MemoryModel {
   private memoryCollection: Collection<Memory>;
   private db: Db;
+  private lastQueries: Map<
+    string,
+    {
+      params: any;
+      timestamp: Date;
+    }
+  > = new Map();
 
   constructor(db: Db) {
     this.db = db;
@@ -247,19 +258,152 @@ export class MemoryModel {
   }
 
   /**
-   * 查找匹配的 Memory
+   * 查找匹配的 Memory，增强版
    */
   async findMemory(
     toolName: string,
     parameters: any,
     confidenceThreshold: number = 0.7
   ): Promise<Memory | null> {
-    return findMatchingMemory(
-      toolName,
-      parameters,
-      this.memoryCollection,
-      confidenceThreshold
-    );
+    try {
+      // 1. 获取当前查询信息
+      const currentParams = { ...parameters };
+
+      // 2. 检查是否需要跳过记忆查询
+      if (this.shouldSkipMemory(toolName, currentParams)) {
+        console.log(`跳过记忆查询: ${toolName}`);
+        // 更新最后查询
+        this.updateLastQuery(toolName, currentParams);
+        return null;
+      }
+
+      // 3. 继续正常的记忆查询逻辑
+      const abstractParams = abstractQueryParameters(toolName, currentParams);
+      const templateHash = generateTemplateHash(toolName, abstractParams);
+
+      // 4. 从数据库查询符合条件的记忆
+      const memories = await this.memoryCollection
+        .find({
+          "queryInfo.toolName": toolName,
+          "queryInfo.templateHash": templateHash,
+          "resultInfo.confidence": { $gte: confidenceThreshold },
+        })
+        .sort({ "resultInfo.confidence": -1 })
+        .toArray();
+
+      // 5. 过滤掉过期记忆
+      const validMemories = memories.filter(
+        (memory) =>
+          !memory.classification.expiresAt ||
+          memory.classification.expiresAt > new Date()
+      );
+
+      if (validMemories.length === 0) {
+        this.updateLastQuery(toolName, currentParams);
+        return null;
+      }
+
+      // 6. 计算相似度并排序
+      const rankedMemories = validMemories
+        .map((memory) => ({
+          memory,
+          similarity: calculateParameterSimilarity(
+            currentParams,
+            memory.queryInfo.originalParameters
+          ),
+        }))
+        .filter((item) => item.similarity > 0.75) // 使用更高的相似度阈值
+        .sort((a, b) => b.similarity - a.similarity);
+
+      if (rankedMemories.length === 0) {
+        this.updateLastQuery(toolName, currentParams);
+        return null;
+      }
+
+      // 7. 更新最佳匹配的访问信息
+      const bestMatch = rankedMemories[0].memory;
+      await this.updateAccessInfo(bestMatch._id);
+
+      // 8. 记录当前查询
+      this.updateLastQuery(toolName, currentParams);
+
+      return bestMatch;
+    } catch (error) {
+      console.error("记忆查询出错:", error);
+      return null;
+    }
+  }
+
+  /**
+   * 判断是否应跳过记忆查询
+   */
+  private shouldSkipMemory(toolName: string, params: any): boolean {
+    // 1. 检查是否为重要或敏感数据
+    if (isImportantData(toolName, params)) {
+      return true;
+    }
+
+    // 2. 获取上次查询
+    const lastQuery = this.lastQueries.get(toolName);
+    if (!lastQuery) {
+      return false; // 首次查询，不跳过
+    }
+
+    // 3. 检查时间间隔 - 短时间内的查询可以复用
+    const timeDiff = new Date().getTime() - lastQuery.timestamp.getTime();
+    if (timeDiff < 1000) {
+      // 1秒内的相同查询直接复用
+      return false;
+    }
+
+    // 4. 对于不同类型的工具，使用不同的策略
+    switch (toolName) {
+      case "find_item":
+        // 检查物品类别是否相同
+        const currentCategory = categorizeItem(params.itemName || "");
+        const lastCategory = categorizeItem(lastQuery.params.itemName || "");
+
+        // 不同类别的物品直接跳过
+        if (currentCategory !== lastCategory) {
+          return true;
+        }
+
+        // 计算物品名称相似度
+        const similarity = calculateStringSimilarity(
+          params.itemName || "",
+          lastQuery.params.itemName || ""
+        );
+
+        // 相似度低，认为是不同物品
+        return similarity < 0.5;
+
+      case "estimate_time":
+        // 检查路线是否相似
+        const currentRouteType = categorizeRoute(
+          params.origin || "",
+          params.destination || ""
+        );
+        const lastRouteType = categorizeRoute(
+          lastQuery.params.origin || "",
+          lastQuery.params.destination || ""
+        );
+
+        // 不同类型的路线直接跳过
+        return currentRouteType !== lastRouteType;
+    }
+
+    // 默认不跳过
+    return false;
+  }
+
+  /**
+   * 更新最后查询记录
+   */
+  private updateLastQuery(toolName: string, params: any): void {
+    this.lastQueries.set(toolName, {
+      params: { ...params },
+      timestamp: new Date(),
+    });
   }
 
   /**
@@ -378,5 +522,43 @@ export class MemoryModel {
    */
   async processEntityEvent(event: EntityChangeEvent): Promise<number> {
     return processEvent(event, this.memoryCollection);
+  }
+
+  // In src/model/memory.ts
+
+  // Add a method to update the memory collection schema if needed
+  async updateMemorySchema(): Promise<void> {
+    try {
+      // Check if we need to add new fields
+      const sample = await this.memoryCollection.findOne({});
+
+      // If no memories yet, nothing to update
+      if (!sample) return;
+
+      // Check and update memories missing new fields
+      const updates = [];
+
+      // Example: Add mediumConfidence tracking
+      if (
+        sample.resultInfo &&
+        sample.resultInfo.confidence >= 0.5 &&
+        sample.resultInfo.confidence < 0.8
+      ) {
+        updates.push({
+          updateMany: {
+            filter: { "resultInfo.confidence": { $gte: 0.5, $lt: 0.8 } },
+            update: { $set: { mediumConfidence: true } },
+          },
+        });
+      }
+
+      // Execute updates if needed
+      if (updates.length > 0) {
+        await this.memoryCollection.bulkWrite(updates);
+        console.log("Memory schema updated successfully");
+      }
+    } catch (error) {
+      console.error("Failed to update memory schema:", error);
+    }
   }
 }

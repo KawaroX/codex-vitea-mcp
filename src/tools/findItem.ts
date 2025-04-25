@@ -2,6 +2,12 @@ import { Db } from "mongodb";
 import { ItemsModel } from "../model/items.js";
 import { MemoryModel } from "../model/memory.js";
 import { StructuredItemLocationResponse } from "../model/types.js";
+import { categorizeItem, isImportantData } from "../utils/memoryUtils.js";
+import {
+  isToolMemoryEnabled,
+  isCategoryMemoryEnabled,
+  getConfidenceThreshold,
+} from "../config/memory-config.js";
 
 export class FindItemTool {
   private itemsModel: ItemsModel;
@@ -25,7 +31,7 @@ export class FindItemTool {
     fromMemory?: boolean;
   }> {
     try {
-      const { itemName, exactMatch = false, skipMemory = false } = params;
+      const { itemName, exactMatch, skipMemory} = params;
       const normalizedName = itemName.toLowerCase().trim().normalize("NFKC");
 
       // 1. 检查参数有效性
@@ -33,28 +39,29 @@ export class FindItemTool {
         return { found: false, message: "必须提供有效的物品名称" };
       }
 
-      // 2. 记忆查询逻辑（如果不跳过）
-      if (!skipMemory) {
+      // 2. 记忆查询逻辑
+      if (!skipMemory && isToolMemoryEnabled("find_item")) {
+        // 检查物品类别
+        const category = categorizeItem(normalizedName);
 
-        // 检查是否是明显不匹配的情况
-        // 调试日志
-        console.log("检查记忆跳过:", normalizedName);
-        const shouldSkipMemory = /眼药水|笔袋/.test(normalizedName);
-        if (shouldSkipMemory) {
-          console.log("跳过记忆查询:", normalizedName);
-        }
+        // 如果该类别启用了记忆，则尝试查询记忆
+        if (isCategoryMemoryEnabled(category)) {
+          console.log("检查记忆:", normalizedName, `(类别: ${category})`);
 
-        if (!shouldSkipMemory) {
+          // 使用配置的置信度阈值
+          const confidenceThreshold = getConfidenceThreshold("findMemory");
+
           const memoryResult = await this.memoryModel.findMemory(
             "find_item",
             {
               itemName: normalizedName,
               exactMatch,
-              // 添加时间戳确保唯一性
-              timestamp: Date.now(),
+              _queryTime: Date.now(),
+              _category: category, // 添加类别信息辅助匹配
             },
-            0.6
+            confidenceThreshold
           );
+
           console.log("记忆查询结果:", memoryResult ? "命中" : "未命中");
 
           if (memoryResult) {
@@ -63,6 +70,8 @@ export class FindItemTool {
               fromMemory: true,
             };
           }
+        } else {
+          console.log(`跳过记忆查询: 物品类别 ${category} 不启用记忆`);
         }
       }
 
@@ -107,18 +116,27 @@ export class FindItemTool {
         }
       }
 
-      // 4. 创建新记忆（如果查询成功）
-      if (result.found && !skipMemory) {
-        console.log("存储新记忆:", itemName);
-        await this.memoryModel.storeMemory(
-          "find_item",
-          {
-            itemName: normalizedName,
-            exactMatch,
-            timestamp: Date.now(),
-          },
-          result
-        );
+      // 4. 存储新记忆
+      if (result.found && !skipMemory && isToolMemoryEnabled("find_item")) {
+        // 检查物品类别
+        const category = categorizeItem(normalizedName);
+
+        // 只为启用记忆的类别存储记忆
+        if (isCategoryMemoryEnabled(category)) {
+          console.log("存储记忆:", itemName, `(类别: ${category})`);
+          await this.memoryModel.storeMemory(
+            "find_item",
+            {
+              itemName: normalizedName,
+              exactMatch,
+              _queryTime: Date.now(),
+              _category: category, // 添加类别信息便于后续匹配
+            },
+            result
+          );
+        } else {
+          console.log(`跳过记忆存储: 物品类别 ${category} 不启用记忆`);
+        }
       }
 
       return result;

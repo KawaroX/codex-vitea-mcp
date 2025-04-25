@@ -16,8 +16,19 @@ import { ContactsModel } from "../model/contacts.js";
 import { BioDataModel } from "../model/bioData.js";
 import { TasksModel } from "../model/tasks.js";
 import { MemoryModel } from "../model/memory.js";
+import {
+  calculateExpiryTime,
+  calculateInitialConfidence,
+  calculateStorageTier,
+  isImportantData,
+} from "../utils/memoryUtils.js";
 
 import { SchedulerManager } from "../utils/scheduler.js";
+
+import {
+  isToolMemoryEnabled,
+  getConfidenceThreshold,
+} from "../config/memory-config.js";
 
 // MongoDB 标准操作类型
 type MongoOperation =
@@ -130,9 +141,12 @@ async function handleFindItem(db: Db, args: Record<string, unknown>) {
     throw new Error("物品查找需要提供物品名称");
   }
 
+  let skipMemory = (args.skipMemory as boolean) || false;
+
   const result = await findItemTool.execute({
     itemName,
     exactMatch,
+    skipMemory,
   });
 
   // 格式化响应
@@ -854,35 +868,54 @@ async function handleCallToolRequestWithMemory({
   client,
   db,
   isReadOnlyMode,
-  schedulerManager,
+  schedulerManager = null,
 }: {
   request: CallToolRequest;
   client: MongoClient;
   db: Db;
   isReadOnlyMode: boolean;
-  schedulerManager?: SchedulerManager;
+  schedulerManager?: SchedulerManager | null;
 }) {
   const { name, arguments: args = {} } = request.params;
 
   console.warn(`使用 Memory 系统处理工具调用: ${name}`);
 
+  // 检查工具是否启用记忆
+  if (!isToolMemoryEnabled(name)) {
+    console.warn(`记忆系统已禁用工具 ${name}，执行直接调用`);
+    return await handleCallToolRequest({
+      request,
+      client,
+      db,
+      isReadOnlyMode,
+    });
+  }
+
   // 创建 Memory 管理器
-  const memoryManager = new MemoryModel(db);
+  const memoryModel = new MemoryModel(db);
 
   // 1. 检查是否有匹配的缓存
-  const cachedMemory = await memoryManager.findMemory(name, args, 0.8);
+  const confidenceThreshold = getConfidenceThreshold("findMemory");
+  const cachedMemory = await memoryModel.findMemory(
+    name,
+    args,
+    confidenceThreshold
+  );
 
   // 2. 如果有高置信度的缓存，直接使用
+  const highConfidenceThreshold = getConfidenceThreshold("highConfidence");
   if (
     cachedMemory &&
-    cachedMemory.resultInfo.confidence > 0.8 &&
+    cachedMemory.resultInfo.confidence >= highConfidenceThreshold &&
     (!cachedMemory.classification.expiresAt ||
       cachedMemory.classification.expiresAt > new Date())
   ) {
     // 更新访问信息
-    await memoryManager.updateAccessInfo(cachedMemory._id);
+    await memoryModel.updateAccessInfo(cachedMemory._id);
 
-    console.warn(`找到匹配的 Memory 缓存，ID: ${cachedMemory._id}`);
+    console.warn(
+      `找到匹配的 Memory 缓存，ID: ${cachedMemory._id}, 置信度: ${cachedMemory.resultInfo.confidence}`
+    );
 
     // 添加 Memory 信息到响应
     const result = cachedMemory.resultInfo.result;
@@ -893,6 +926,7 @@ async function handleCallToolRequestWithMemory({
       result._memoryId = cachedMemory._id.toString();
       result._confidence = cachedMemory.resultInfo.confidence;
       result._cachedAt = cachedMemory.resultInfo.timestamp;
+      result._tier = cachedMemory.classification.tier;
     }
 
     return formatResponse(result);
@@ -909,26 +943,41 @@ async function handleCallToolRequestWithMemory({
     isReadOnlyMode,
   });
 
-  // 4. 获取实际结果并存储到 Memory（如果适合缓存）
   try {
-    // 从响应中提取实际结果对象
+    // 4. 从响应中提取实际结果对象
     const resultData = JSON.parse(response.content[0].text);
 
+    // 5. 判断是否适合缓存
     const shouldCache =
+      // 不缓存修改操作
       !name.startsWith("update_") &&
       !name.startsWith("delete_") &&
       !name.startsWith("transfer_") &&
       !name.startsWith("add_") &&
+      // 检查是否为重要数据
+      !isImportantData(name, args) &&
+      // 检查结果是否有效
       typeof resultData === "object" &&
       resultData !== null;
 
     if (shouldCache) {
       try {
         console.warn(`存储结果到 Memory 缓存`);
-        const memory = await memoryManager.storeMemory(name, args, resultData);
+
+        // 6. 根据查询类型决定存储层级和有效期
+        const tier = calculateStorageTier(name, args);
+        const initialConfidence = calculateInitialConfidence(name, args);
+        const expiresAt = calculateExpiryTime(tier, name, args);
+
+        console.warn(
+          `存储层级: ${tier}, 初始置信度: ${initialConfidence}, 过期时间: ${expiresAt}`
+        );
+
+        const memory = await memoryModel.storeMemory(name, args, resultData);
 
         // 添加 Memory ID 到结果
         resultData._memoryId = memory._id.toString();
+        resultData._newlyStored = true;
 
         // 重新格式化响应
         return formatResponse(resultData);

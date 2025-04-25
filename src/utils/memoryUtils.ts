@@ -1,7 +1,13 @@
-// src/utils/memoryUtils.ts
 import crypto from "crypto";
 import { ObjectId } from "mongodb";
 import { EntityRelationshipType } from "../model/memory.js";
+import {
+  getToolConfig,
+  getCategoryConfig,
+  getExpiryDays,
+  isToolMemoryEnabled,
+  isCategoryMemoryEnabled,
+} from "../config/memory-config.js";
 
 /**
  * 为工具名称和抽象参数生成模板哈希
@@ -24,188 +30,353 @@ export function generateTemplateHash(
  * @returns 抽象后的参数
  */
 export function abstractQueryParameters(toolName: string, params: any): any {
-  // 创建参数副本并标准化
+  // 创建参数副本
   const abstractParams = { ...params };
 
-  // 参数标准化处理
-  if (abstractParams.itemName) {
-    abstractParams.itemName = abstractParams.itemName
-      .toLowerCase()
-      .trim()
-      .normalize('NFKC');
-  }
+  // 标准化处理
+  Object.keys(abstractParams).forEach((key) => {
+    if (typeof abstractParams[key] === "string") {
+      abstractParams[key] = abstractParams[key].trim();
+    }
+  });
+
+  // 移除时间戳等非关键参数
+  delete abstractParams._queryTime;
+  delete abstractParams.timestamp;
 
   // 根据工具类型进行特定处理
   switch (toolName) {
     case "find_item":
-      // 保留查询模式但抽象具体值
       if (abstractParams.itemName) {
-        abstractParams.itemName = "<ITEM_NAME>";
+        // 标准化物品名称
+        const normalizedName = abstractParams.itemName.toLowerCase().trim();
+
+        // 添加类别信息但保留抽象名称标记
+        abstractParams.itemCategory = categorizeItem(normalizedName);
+        abstractParams.itemName = `<${abstractParams.itemCategory}>`;
       }
-      if (abstractParams.exactMatch !== undefined) {
-        // 保留布尔值，不做抽象
-      }
+      // 保留 exactMatch 标志，不做抽象
       break;
 
     case "estimate_time":
+      // 添加路线类型信息
+      if (abstractParams.origin && abstractParams.destination) {
+        abstractParams.routeType = categorizeRoute(
+          abstractParams.origin,
+          abstractParams.destination
+        );
+      }
+
+      // 替换为抽象标记
       if (abstractParams.origin) {
-        abstractParams.origin = "<LOCATION>";
+        abstractParams.origin = "<ORIGIN>";
       }
       if (abstractParams.destination) {
-        abstractParams.destination = "<LOCATION>";
+        abstractParams.destination = "<DESTINATION>";
       }
       break;
 
+    // 其他工具类型的处理...
     case "query_item":
-      if (abstractParams.itemId) {
-        abstractParams.itemId = "<ITEM_ID>";
-      }
-      if (abstractParams.search) {
-        abstractParams.search = "<SEARCH_TERM>";
-      }
-      if (abstractParams.containerId) {
-        abstractParams.containerId = "<CONTAINER_ID>";
-      }
-      // 保留 containerItems 布尔值
-      break;
-
     case "query_location":
-      if (abstractParams.locationId) {
-        abstractParams.locationId = "<LOCATION_ID>";
-      }
-      if (abstractParams.search) {
-        abstractParams.search = "<SEARCH_TERM>";
-      }
-      if (abstractParams.hierarchyFor) {
-        abstractParams.hierarchyFor = "<LOCATION_ID>";
-      }
-      if (abstractParams.childrenOf) {
-        abstractParams.childrenOf = "<LOCATION_ID>";
-      }
-      break;
-
     case "query_contact":
-      if (abstractParams.contactId) {
-        abstractParams.contactId = "<CONTACT_ID>";
-      }
-      if (abstractParams.search) {
-        abstractParams.search = "<SEARCH_TERM>";
-      }
-      if (abstractParams.relationship) {
-        abstractParams.relationship = "<RELATIONSHIP>";
-      }
-      if (abstractParams.tag) {
-        abstractParams.tag = "<TAG>";
-      }
-      if (abstractParams.school) {
-        abstractParams.school = "<SCHOOL>";
-      }
-      if (abstractParams.hukou) {
-        abstractParams.hukou = "<HUKOU>";
-      }
-      break;
-
     case "query_biodata":
-      if (abstractParams.recordId) {
-        abstractParams.recordId = "<BIODATA_ID>";
-      }
-      if (abstractParams.measurementType) {
-        abstractParams.measurementType = "<MEASUREMENT_TYPE>";
-      }
-      // 保留 history, stats, measurementTypes 布尔值
-      if (abstractParams.search) {
-        abstractParams.search = "<SEARCH_TERM>";
-      }
-      break;
-
     case "query_task":
-      if (abstractParams.taskId) {
-        abstractParams.taskId = "<TASK_ID>";
-      }
-      if (abstractParams.tag) {
-        abstractParams.tag = "<TAG>";
-      }
-      if (abstractParams.taskType) {
-        abstractParams.taskType = "<TASK_TYPE>";
-      }
-      // 保留布尔值和数字值
-      break;
-
-    case "transfer_item":
-      if (abstractParams.itemId) {
-        abstractParams.itemId = "<ITEM_ID>";
-      }
-      if (abstractParams.itemName) {
-        abstractParams.itemName = "<ITEM_NAME>";
-      }
-      if (abstractParams.targetLocationId) {
-        abstractParams.targetLocationId = "<LOCATION_ID>";
-      }
-      if (abstractParams.targetLocationName) {
-        abstractParams.targetLocationName = "<LOCATION_NAME>";
-      }
-      if (abstractParams.targetContainerId) {
-        abstractParams.targetContainerId = "<CONTAINER_ID>";
-      }
-      if (abstractParams.targetContainerName) {
-        abstractParams.targetContainerName = "<CONTAINER_NAME>";
-      }
-      // 保留 note 和 removeFromCurrentContainer
-      break;
-
-    case "update_task_status":
-      if (abstractParams.taskId) {
-        abstractParams.taskId = "<TASK_ID>";
-      }
-      if (abstractParams.taskName) {
-        abstractParams.taskName = "<TASK_NAME>";
-      }
-      // 保留 newStatus 和 comment
-      break;
-
-    case "add_structured_note":
-      // 保留 entityType
-      if (abstractParams.entityId) {
-        abstractParams.entityId = "<ENTITY_ID>";
-      }
-      if (abstractParams.entityName) {
-        abstractParams.entityName = "<ENTITY_NAME>";
-      }
-      // 内容和标签是关键信息，不抽象
-      break;
-
-    case "search_notes":
-      if (abstractParams.tag) {
-        abstractParams.tag = "<TAG>";
-      }
-      // 保留 entityType
-      if (abstractParams.entityId) {
-        abstractParams.entityId = "<ENTITY_ID>";
-      }
-      if (abstractParams.entityName) {
-        abstractParams.entityName = "<ENTITY_NAME>";
-      }
-      break;
-
     case "get_latest_biodata":
-      if (abstractParams.measurementType) {
-        abstractParams.measurementType = "<MEASUREMENT_TYPE>";
-      }
-      // 保留布尔值和数字值
-      break;
-
     case "get_pending_tasks":
-      // 保留大部分布尔值和数字值
-      if (abstractParams.taskId) {
-        abstractParams.taskId = "<TASK_ID>";
-      }
-      if (abstractParams.taskType) {
-        abstractParams.taskType = "<TASK_TYPE>";
-      }
+      // 为这些工具实现相应的抽象逻辑...
       break;
   }
 
   return abstractParams;
+}
+
+/**
+ * 对物品进行分类，基于通用特征
+ */
+export function categorizeItem(itemName: string): string {
+  if (!itemName) return "UNKNOWN";
+
+  const name = itemName.toLowerCase().trim();
+
+  // 检查物品类别
+  if (/证|证件|证书|身份|护照|驾驶|学生证|工作证/.test(name)) {
+    return "DOCUMENT";
+  }
+
+  if (/钱|钱包|现金|银行卡|信用卡|存折|财物|贵重/.test(name)) {
+    return "VALUABLE";
+  }
+
+  if (/钥匙|门卡|门禁|磁卡|锁/.test(name)) {
+    return "KEY";
+  }
+
+  if (/手机|电脑|笔记本|平板|相机|硬盘|电子|设备/.test(name)) {
+    return "ELECTRONICS";
+  }
+
+  if (/书|书本|教材|笔|钢笔|中性笔|铅笔|橡皮|文具|纸/.test(name)) {
+    return "STATIONERY";
+  }
+
+  if (/衣|衣服|裤|裤子|袜|袜子|鞋|鞋子|衬衫|外套|帽|帽子|围巾/.test(name)) {
+    return "CLOTHING";
+  }
+
+  if (/药|药水|药片|药膏|医|医疗|治疗/.test(name)) {
+    return "MEDICINE";
+  }
+
+  if (/包|背包|书包|袋|箱|箱子|盒|盒子/.test(name)) {
+    return "CONTAINER";
+  }
+
+  if (/食品|食物|吃的|喝的|零食|饮料|水|茶|咖啡/.test(name)) {
+    return "FOOD";
+  }
+
+  // 无法分类的返回MISC类别
+  return "MISC";
+}
+
+/**
+ * 对路线进行分类，基于通用特征
+ */
+export function categorizeRoute(origin: string, destination: string): string {
+  // 如果有明确的场景词，进行分类
+  const originLower = typeof origin === "string" ? origin.toLowerCase() : "";
+  const destLower =
+    typeof destination === "string" ? destination.toLowerCase() : "";
+
+  // 校园场景
+  if (
+    /学院|大学|学校|校区|教学楼|宿舍|公寓|图书馆|食堂/.test(
+      originLower + destLower
+    )
+  ) {
+    return "CAMPUS";
+  }
+
+  // 商业场景
+  if (/商场|超市|购物|商店|店铺|市场/.test(originLower + destLower)) {
+    return "SHOPPING";
+  }
+
+  // 通勤场景
+  if (/公司|单位|工作|办公/.test(originLower + destLower)) {
+    return "COMMUTE";
+  }
+
+  // 无法分类的返回通用类型
+  return "GENERAL";
+}
+
+/**
+ * 计算参数相似度
+ * @param params1 参数1
+ * @param params2 参数2
+ * @returns 相似度(0-1)
+ */
+export function calculateParameterSimilarity(
+  params1: any,
+  params2: any
+): number {
+  // 不同类型参数直接返回0
+  if (typeof params1 !== typeof params2) {
+    return 0;
+  }
+
+  // 基本类型比较
+  if (typeof params1 !== "object" || params1 === null || params2 === null) {
+    if (typeof params1 === "string" && typeof params2 === "string") {
+      return calculateStringSimilarity(params1, params2);
+    }
+    return params1 === params2 ? 1 : 0;
+  }
+
+  // 数组类型
+  if (Array.isArray(params1) && Array.isArray(params2)) {
+    if (params1.length === 0 && params2.length === 0) return 1;
+    if (params1.length === 0 || params2.length === 0) return 0;
+
+    const intersection = params1.filter((item1) =>
+      params2.some((item2) => calculateParameterSimilarity(item1, item2) > 0.8)
+    );
+
+    return intersection.length / Math.max(params1.length, params2.length);
+  }
+
+  // 对象类型 - 基于共同属性计算
+  const keys1 = Object.keys(params1);
+  const keys2 = Object.keys(params2);
+
+  if (keys1.length === 0 && keys2.length === 0) return 1;
+
+  const commonKeys = keys1.filter((key) => keys2.includes(key));
+  if (commonKeys.length === 0) return 0;
+
+  let totalSimilarity = 0;
+  for (const key of commonKeys) {
+    // 对于特殊键值进行比较
+    if (key === "itemCategory" && params1[key] !== params2[key]) {
+      return 0.3; // 不同类别的相似度较低
+    }
+
+    if (key === "routeType" && params1[key] !== params2[key]) {
+      return 0.2; // 不同路线类型相似度更低
+    }
+
+    totalSimilarity += calculateParameterSimilarity(params1[key], params2[key]);
+  }
+
+  // 考虑属性覆盖率和值相似度
+  const keyCoverage = commonKeys.length / Math.max(keys1.length, keys2.length);
+  const valueSimilarity = totalSimilarity / commonKeys.length;
+
+  return keyCoverage * valueSimilarity;
+}
+
+/**
+ * 计算字符串相似度
+ */
+export function calculateStringSimilarity(str1: string, str2: string): number {
+  if (!str1 || !str2) return 0;
+
+  // 标准化
+  const s1 = str1.toLowerCase().trim();
+  const s2 = str2.toLowerCase().trim();
+
+  // 完全匹配
+  if (s1 === s2) return 1.0;
+
+  // 为空的情况
+  if (s1.length === 0 || s2.length === 0) return 0;
+
+  // 提取关键词
+  const tokens1 = s1.split(/\s+/).filter((w) => w.length > 1);
+  const tokens2 = s2.split(/\s+/).filter((w) => w.length > 1);
+
+  if (tokens1.length === 0 || tokens2.length === 0) {
+    // 基于字符级别的相似度
+    const distance = levenshteinDistance(s1, s2);
+    return 1 - distance / Math.max(s1.length, s2.length);
+  }
+
+  // 计算共同关键词
+  const commonTokens = tokens1.filter((t) => tokens2.includes(t));
+  return commonTokens.length / Math.max(tokens1.length, tokens2.length);
+}
+
+/**
+ * 检查是否为重要数据
+ * 用于决定是否缓存和缓存策略
+ */
+export function isImportantData(toolName: string, params: any): boolean {
+  // 检查工具是否启用记忆
+  if (!isToolMemoryEnabled(toolName)) {
+    return true; // 工具未启用记忆，视为重要数据
+  }
+
+  switch (toolName) {
+    case "find_item":
+      if (params.itemName) {
+        const category = categorizeItem(params.itemName);
+        // 检查物品类别是否启用记忆
+        return !isCategoryMemoryEnabled(category);
+      }
+      break;
+
+    case "get_latest_biodata":
+    case "get_pending_tasks":
+      // 实时性要求高的工具
+      return true;
+
+    case "query_task":
+      // 任务状态通常需要实时性
+      return true;
+  }
+
+  return false;
+}
+
+/**
+ * 计算存储层级
+ * @param toolName 工具名称
+ * @param parameters 参数
+ * @returns 存储层级
+ */
+export function calculateStorageTier(toolName: string, params: any): string {
+  // 获取工具配置的默认层级
+  const defaultTier = getToolConfig(toolName).defaultTier;
+
+  // 工具特定逻辑
+  switch (toolName) {
+    case "find_item":
+      if (params.itemName) {
+        // 如果查询的是重要物品，使用短期记忆
+        const category = categorizeItem(params.itemName);
+        return getCategoryConfig(category).defaultTier;
+      }
+      break;
+
+    case "estimate_time":
+      // 路线通常是长期记忆
+      return "long_term";
+  }
+
+  return defaultTier;
+}
+
+/**
+ * 计算初始置信度
+ * @param toolName 工具名称
+ * @returns 初始置信度(0-1)
+ */
+export function calculateInitialConfidence(
+  toolName: string,
+  params: any = {}
+): number {
+  // 获取工具配置的默认置信度
+  const defaultConfidence = getToolConfig(toolName).initialConfidence;
+
+  // 对于物品查询，使用物品类别的配置
+  if (toolName === "find_item" && params.itemName) {
+    const category = categorizeItem(params.itemName);
+    return getCategoryConfig(category).initialConfidence;
+  }
+
+  return defaultConfidence;
+}
+
+/**
+ * 计算过期时间
+ */
+export function calculateExpiryTime(
+  tier: string,
+  toolName: string,
+  params: any = {}
+): Date | null {
+  const now = new Date();
+
+  // 获取层级的过期天数
+  const expiryDays = getExpiryDays(tier as any);
+
+  // 如果过期天数为null，表示不过期
+  if (expiryDays === null) {
+    return null;
+  }
+
+  // 对重要数据缩短有效期或禁用缓存
+  if (isImportantData(toolName, params)) {
+    // 重要数据使用更短的过期时间
+    now.setHours(now.getHours() + 1); // 1小时
+    return now;
+  }
+
+  // 普通数据使用标准过期时间
+  now.setDate(now.getDate() + expiryDays);
+  return now;
 }
 
 /**
@@ -417,114 +588,6 @@ export function extractEntityDependencies(
 }
 
 /**
- * 计算参数相似度
- * @param params1 参数1
- * @param params2 参数2
- * @returns 相似度(0-1)
- */
-export function calculateParameterSimilarity(
-  params1: any,
-  params2: any
-): number {
-  // 如果参数类型不同，返回0
-  if (typeof params1 !== typeof params2) {
-    return 0;
-  }
-
-  // 如果参数是基本类型，直接比较
-  if (typeof params1 !== "object" || params1 === null || params2 === null) {
-    if (typeof params1 === 'string' && typeof params2 === 'string') {
-      // 标准化字符串
-      const str1 = params1.toLowerCase().trim().normalize('NFKC');
-      const str2 = params2.toLowerCase().trim().normalize('NFKC');
-      
-      // 完全匹配
-      if (str1 === str2) return 1;
-      
-      // 重要物品名称严格匹配
-      const isImportantItem = /证|卡|钥匙|重要|身份证|护照|驾驶证|学生证/i.test(str1) || 
-                            /证|卡|钥匙|重要|身份证|护照|驾驶证|学生证/i.test(str2);
-      
-      if (isImportantItem) {
-        // 重要物品必须完全匹配或包含关键部分
-        const hasKeyPart = str1.includes('身份证') || str2.includes('身份证') ||
-                          str1.includes('证') || str2.includes('证');
-        return hasKeyPart ? 0.8 : 0;
-      }
-      
-      // 对于普通物品名称
-      if (str1.length > 3 && str2.length > 3) {
-        // 检查是否包含相同关键词
-        const keywords1 = str1.split(/\s+/);
-        const keywords2 = str2.split(/\s+/);
-        const commonKeywords = keywords1.filter(k => keywords2.includes(k));
-        
-        if (commonKeywords.length > 0) {
-          return 0.7; // 有共同关键词则返回中等相似度
-        }
-        
-        // 计算编辑距离相似度
-        const distance = levenshteinDistance(str1, str2);
-        const similarity = 1 - (distance / Math.max(str1.length, str2.length));
-        
-        // 只有相似度高于0.6才返回
-        return similarity > 0.6 ? similarity : 0;
-      }
-      
-      // 默认计算编辑距离相似度
-      const distance = levenshteinDistance(str1, str2);
-      return 1 - (distance / Math.max(str1.length, str2.length));
-    }
-    return params1 === params2 ? 1 : 0;
-  }
-
-  // 如果是数组，比较数组元素
-  if (Array.isArray(params1) && Array.isArray(params2)) {
-    if (params1.length === 0 && params2.length === 0) {
-      return 1;
-    }
-    if (params1.length === 0 || params2.length === 0) {
-      return 0;
-    }
-
-    // 计算数组交集大小
-    const intersection = params1.filter((item1) =>
-      params2.some((item2) => calculateParameterSimilarity(item1, item2) > 0.8)
-    );
-
-    return intersection.length / Math.max(params1.length, params2.length);
-  }
-
-  // 对于对象，比较属性
-  const keys1 = Object.keys(params1);
-  const keys2 = Object.keys(params2);
-
-  if (keys1.length === 0 && keys2.length === 0) {
-    return 1;
-  }
-
-  // 计算属性交集
-  const commonKeys = keys1.filter((key) => keys2.includes(key));
-
-  if (commonKeys.length === 0) {
-    return 0;
-  }
-
-  // 计算各个属性的相似度并取平均值
-  let totalSimilarity = 0;
-
-  for (const key of commonKeys) {
-    totalSimilarity += calculateParameterSimilarity(params1[key], params2[key]);
-  }
-
-  // 最终相似度考虑属性覆盖率和值相似度
-  const keyCoverage = commonKeys.length / Math.max(keys1.length, keys2.length);
-  const valueSimilarity = totalSimilarity / commonKeys.length;
-
-  return keyCoverage * valueSimilarity;
-}
-
-/**
  * 检查字符串是否为ObjectId格式
  * @param str 要检查的字符串
  * @returns 是否为ObjectId格式
@@ -534,169 +597,45 @@ export function isObjectIdString(str: any): boolean {
 }
 
 /**
- * 计算存储层级
- * @param toolName 工具名称
- * @param parameters 参数
- * @returns 存储层级
- */
-export function calculateStorageTier(
-  toolName: string,
-  parameters: any,
-  accessFrequency?: number
-): string {
-  // 默认层级映射
-  const defaultTierByTool: Record<string, string> = {
-    find_item: "mid_term",
-    estimate_time: "mid_term",
-    query_item: "mid_term",
-    query_location: "long_term",
-    query_contact: "long_term",
-    query_biodata: "mid_term",
-    query_task: "short_term",
-    get_latest_biodata: "short_term",
-    get_pending_tasks: "short_term",
-  };
-
-  // 基于访问频率的动态层级调整
-  if (accessFrequency !== undefined) {
-    if (accessFrequency > 10) return "long_term";
-    if (accessFrequency > 5) return "mid_term";
-    return "short_term";
-  }
-
-  // 默认层级
-  const defaultTier = defaultTierByTool[toolName] || "mid_term";
-
-  // 工具特定逻辑
-  switch (toolName) {
-    case "find_item":
-      // 如果查询的是重要物品（如证件类），使用长期记忆
-      if (
-        parameters.itemName &&
-        /证|卡|钥匙|重要|身份证|护照|驾驶证|学生证/i.test(parameters.itemName)
-      ) {
-        return "long_term";
-      }
-      break;
-
-    case "estimate_time":
-      // 常用路线使用长期记忆
-      return "long_term";
-
-    case "query_contact":
-      // 联系人信息通常是长期有效的
-      return "long_term";
-  }
-
-  return defaultTier;
-}
-
-/**
- * 计算过期时间
- * @param tier 存储层级
- * @param toolName 工具名称
- * @returns 过期时间(null表示不过期)
- */
-export function calculateExpiryTime(
-  tier: string,
-  toolName: string
-): Date | null {
-  const now = new Date();
-
-  switch (tier) {
-    case "short_term":
-      now.setDate(now.getDate() + 1); // 1天后过期
-      return now;
-
-    case "mid_term":
-      now.setDate(now.getDate() + 14); // 2周后过期
-      return now;
-
-    case "long_term":
-      return null; // 不过期
-
-    default:
-      now.setDate(now.getDate() + 7); // 默认1周
-      return now;
-  }
-}
-
-/**
- * 计算初始置信度
- * @param toolName 工具名称
- * @returns 初始置信度(0-1)
- */
-export function calculateInitialConfidence(
-  toolName: string, 
-  queryCount: number = 1,
-  itemName?: string
-): number {
-  // 不同工具的基础置信度
-  const baseConfidenceByTool: Record<string, number> = {
-    find_item: 0.9, // 物品查找结果通常可靠
-    estimate_time: 0.7, // 时间估算有一定变数
-    query_item: 0.95, // 物品查询结果非常可靠
-    query_location: 0.95, // 位置查询结果非常可靠
-    query_contact: 0.95, // 联系人查询结果非常可靠
-    query_biodata: 0.85, // 生物数据查询结果较可靠
-    query_task: 0.8, // 任务查询可能变化较快
-    get_latest_biodata: 0.85, // 最新生物数据较可靠
-    get_pending_tasks: 0.7, // 待办任务变化快
-  };
-
-  // 基于查询次数调整置信度
-  const baseConfidence = baseConfidenceByTool[toolName] || 0.8;
-  const frequencyBonus = Math.min(0.1, queryCount * 0.02);
-  
-  let finalConfidence = Math.min(1, baseConfidence + frequencyBonus);
-  
-  // 对于物品查询，根据物品名称调整置信度
-  if (toolName === "find_item" && itemName) {
-    const normalizedName = itemName.toLowerCase().trim().normalize('NFKC');
-    
-    // 重要物品提高置信度
-    if (/证|卡|钥匙|重要|身份证|护照|驾驶证|学生证/i.test(normalizedName)) {
-      finalConfidence = Math.min(1, finalConfidence * 1.2);
-    }
-    // 模糊匹配的物品降低置信度
-    else if (normalizedName.includes('?') || normalizedName.includes('*')) {
-      finalConfidence = Math.max(0.5, finalConfidence * 0.8);
-    }
-  }
-  
-  return finalConfidence;
-}
-
-/**
  * 为Memory生成标签
  * @param toolName 工具名称
  * @param parameters 参数
  * @returns 标签数组
  */
+
 // 计算Levenshtein编辑距离
-function levenshteinDistance(a: string, b: string): number {
+export function levenshteinDistance(a: string, b: string): number {
+  // 优化: 处理特殊情况
+  if (a === b) return 0;
   if (a.length === 0) return b.length;
   if (b.length === 0) return a.length;
 
-  const matrix = Array(b.length + 1).fill(null).map(() => 
-    Array(a.length + 1).fill(null)
-  );
+  // 如果字符串很长，使用优化的算法
+  if (a.length > 100 || b.length > 100) {
+    return optimizedLevenshteinDistance(a, b);
+  }
 
+  // 创建距离矩阵
+  const matrix = Array(b.length + 1)
+    .fill(null)
+    .map(() => Array(a.length + 1).fill(null));
+
+  // 初始化第一行和第一列
   for (let i = 0; i <= a.length; i++) {
     matrix[0][i] = i;
   }
-
   for (let j = 0; j <= b.length; j++) {
     matrix[j][0] = j;
   }
 
+  // 填充矩阵
   for (let j = 1; j <= b.length; j++) {
     for (let i = 1; i <= a.length; i++) {
       const substitutionCost = a[i - 1] === b[j - 1] ? 0 : 1;
       matrix[j][i] = Math.min(
-        matrix[j][i - 1] + 1,
-        matrix[j - 1][i] + 1,
-        matrix[j - 1][i - 1] + substitutionCost
+        matrix[j][i - 1] + 1, // 删除
+        matrix[j - 1][i] + 1, // 插入
+        matrix[j - 1][i - 1] + substitutionCost // 替换
       );
     }
   }
@@ -742,4 +681,48 @@ export function generateTags(toolName: string, parameters: any): string[] {
   }
 
   return tags;
+}
+
+/**
+ * 优化版Levenshtein距离计算
+ * 仅保留两行数据，减少内存消耗
+ */
+function optimizedLevenshteinDistance(a: string, b: string): number {
+  // 确保a是较短的字符串
+  if (a.length > b.length) {
+    const temp = a;
+    a = b;
+    b = temp;
+  }
+
+  // 创建两行数组而非完整矩阵
+  let previousRow = Array(a.length + 1).fill(0);
+  let currentRow = Array(a.length + 1).fill(0);
+
+  // 初始化第一行
+  for (let i = 0; i <= a.length; i++) {
+    previousRow[i] = i;
+  }
+
+  // 填充剩余行
+  for (let j = 1; j <= b.length; j++) {
+    currentRow[0] = j;
+
+    for (let i = 1; i <= a.length; i++) {
+      const substitutionCost = a[i - 1] === b[j - 1] ? 0 : 1;
+      currentRow[i] = Math.min(
+        currentRow[i - 1] + 1, // 删除
+        previousRow[i] + 1, // 插入
+        previousRow[i - 1] + substitutionCost // 替换
+      );
+    }
+
+    // 交换行，重用数组
+    const temp = previousRow;
+    previousRow = currentRow;
+    currentRow = temp;
+  }
+
+  // 结果在previousRow的最后一个元素
+  return previousRow[a.length];
 }
