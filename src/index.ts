@@ -1,4 +1,5 @@
-#!/usr/bin/env node
+import 'dotenv/config';
+
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { connectToMongoDB } from "./mongo.js";
 import { createServer } from "./server.js";
@@ -18,7 +19,7 @@ async function main() {
 
   const args = process.argv.slice(2);
   // 默认使用环境变量
-  let connectionUrl = "";
+  let connectionUrl = process.env.MCP_MONGODB_URI || "";
   let readOnlyMode = process.env.MCP_MONGODB_READONLY === "true" || false;
   let useMemory = process.env.VITEA_USE_MEMORY === "true" || false;
 

@@ -434,15 +434,46 @@ export function calculateParameterSimilarity(
   // 如果参数是基本类型，直接比较
   if (typeof params1 !== "object" || params1 === null || params2 === null) {
     if (typeof params1 === 'string' && typeof params2 === 'string') {
-      // 使用改进的字符串相似度算法
+      // 标准化字符串
       const str1 = params1.toLowerCase().trim().normalize('NFKC');
       const str2 = params2.toLowerCase().trim().normalize('NFKC');
+      
+      // 完全匹配
       if (str1 === str2) return 1;
       
-      // 计算编辑距离相似度
-      const len = Math.max(str1.length, str2.length);
+      // 重要物品名称严格匹配
+      const isImportantItem = /证|卡|钥匙|重要|身份证|护照|驾驶证|学生证/i.test(str1) || 
+                            /证|卡|钥匙|重要|身份证|护照|驾驶证|学生证/i.test(str2);
+      
+      if (isImportantItem) {
+        // 重要物品必须完全匹配或包含关键部分
+        const hasKeyPart = str1.includes('身份证') || str2.includes('身份证') ||
+                          str1.includes('证') || str2.includes('证');
+        return hasKeyPart ? 0.8 : 0;
+      }
+      
+      // 对于普通物品名称
+      if (str1.length > 3 && str2.length > 3) {
+        // 检查是否包含相同关键词
+        const keywords1 = str1.split(/\s+/);
+        const keywords2 = str2.split(/\s+/);
+        const commonKeywords = keywords1.filter(k => keywords2.includes(k));
+        
+        if (commonKeywords.length > 0) {
+          return 0.7; // 有共同关键词则返回中等相似度
+        }
+        
+        // 计算编辑距离相似度
+        const distance = levenshteinDistance(str1, str2);
+        const similarity = 1 - (distance / Math.max(str1.length, str2.length));
+        
+        // 只有相似度高于0.6才返回
+        return similarity > 0.6 ? similarity : 0;
+      }
+      
+      // 默认计算编辑距离相似度
       const distance = levenshteinDistance(str1, str2);
-      return 1 - (distance / len);
+      return 1 - (distance / Math.max(str1.length, str2.length));
     }
     return params1 === params2 ? 1 : 0;
   }
@@ -595,7 +626,11 @@ export function calculateExpiryTime(
  * @param toolName 工具名称
  * @returns 初始置信度(0-1)
  */
-export function calculateInitialConfidence(toolName: string, queryCount: number = 1): number {
+export function calculateInitialConfidence(
+  toolName: string, 
+  queryCount: number = 1,
+  itemName?: string
+): number {
   // 不同工具的基础置信度
   const baseConfidenceByTool: Record<string, number> = {
     find_item: 0.9, // 物品查找结果通常可靠
@@ -613,7 +648,23 @@ export function calculateInitialConfidence(toolName: string, queryCount: number 
   const baseConfidence = baseConfidenceByTool[toolName] || 0.8;
   const frequencyBonus = Math.min(0.1, queryCount * 0.02);
   
-  return Math.min(1, baseConfidence + frequencyBonus);
+  let finalConfidence = Math.min(1, baseConfidence + frequencyBonus);
+  
+  // 对于物品查询，根据物品名称调整置信度
+  if (toolName === "find_item" && itemName) {
+    const normalizedName = itemName.toLowerCase().trim().normalize('NFKC');
+    
+    // 重要物品提高置信度
+    if (/证|卡|钥匙|重要|身份证|护照|驾驶证|学生证/i.test(normalizedName)) {
+      finalConfidence = Math.min(1, finalConfidence * 1.2);
+    }
+    // 模糊匹配的物品降低置信度
+    else if (normalizedName.includes('?') || normalizedName.includes('*')) {
+      finalConfidence = Math.max(0.5, finalConfidence * 0.8);
+    }
+  }
+  
+  return finalConfidence;
 }
 
 /**
