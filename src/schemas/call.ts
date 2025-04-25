@@ -1,17 +1,23 @@
 import type { CallToolRequest } from "@modelcontextprotocol/sdk/types.js";
-import type { Db, MongoClient } from "mongodb";
+import { ObjectId, type Db, type MongoClient } from "mongodb";
+
 import { FindItemTool } from "../tools/findItem.js";
 import { EstimateTimeTool } from "../tools/estimateTime.js";
 import { TransferItemTool } from "../tools/transferItem.js";
 import { UpdateTaskStatusTool } from "../tools/updateTaskStatus.js";
 import { AddStructuredNoteTool } from "../tools/addStructuredNote.js";
 import { SearchNotesTool } from "../tools/searchNotes.js";
+import { MemoryStatusTool } from "../tools/memoryStatus.js";
+import { MemoryMaintenanceTool } from "../tools/memoryMaintenance.js";
+
 import { ItemsModel } from "../model/items.js";
 import { LocationsModel } from "../model/locations.js";
 import { ContactsModel } from "../model/contacts.js";
 import { BioDataModel } from "../model/bioData.js";
 import { TasksModel } from "../model/tasks.js";
-import { ObjectId } from "mongodb";
+import { MemoryModel } from "../model/memory.js";
+
+import { SchedulerManager } from "../utils/scheduler.js";
 
 // MongoDB 标准操作类型
 type MongoOperation =
@@ -25,10 +31,12 @@ type MongoOperation =
   | "query_task" // 查询任务
   | "get_latest_biodata" // 获取最新生物数据
   | "get_pending_tasks" // 获取待办任务
-  | "transfer_item"
-  | "update_task_status"
-  | "add_structured_note"
-  | "search_notes"; // 转移物品
+  | "transfer_item" // 转移物品
+  | "update_task_status" // 更新任务状态
+  | "add_structured_note" // 添加结构化笔记
+  | "search_notes" // 搜索笔记
+  | "memory_status" // Memory系统状态
+  | "memory_maintenance"; // Memory系统维护
 
 // 不允许在只读模式下执行的操作
 const WRITE_OPERATIONS = ["update_item", "transfer_item"];
@@ -39,16 +47,18 @@ type ObjectIdConversionMode = "auto" | "none" | "force";
 /**
  * 处理调用工具请求
  */
-export async function handleCallToolRequest({
+async function handleCallToolRequest({
   request,
   client,
   db,
   isReadOnlyMode,
+  schedulerManager,
 }: {
   request: CallToolRequest;
   client: MongoClient;
   db: Db;
   isReadOnlyMode: boolean;
+  schedulerManager?: SchedulerManager;
 }) {
   const { name, arguments: args = {} } = request.params;
   const operation = name as MongoOperation;
@@ -91,6 +101,10 @@ export async function handleCallToolRequest({
         return await handleAddStructuredNote(db, args);
       case "search_notes":
         return await handleSearchNotes(db, args);
+      case "memory_status":
+        return await handleMemoryStatus(db, schedulerManager, args);
+      case "memory_maintenance":
+        return await handleMemoryMaintenance(db, args);
       default:
         throw new Error(`未知操作: ${operation}`);
     }
@@ -790,3 +804,147 @@ async function handleSearchNotes(db: Db, args: Record<string, unknown>) {
     results: result.results,
   });
 }
+
+async function handleMemoryStatus(
+  db: Db,
+  schedulerManager: SchedulerManager | null,
+  args: Record<string, unknown>
+): Promise<any> {
+  if (!schedulerManager) {
+    return formatResponse({
+      success: false,
+      message: "Memory系统未启用",
+    });
+  }
+
+  const memoryStatusTool = new MemoryStatusTool(db, schedulerManager);
+
+  const result = await memoryStatusTool.execute({
+    detailed: args.detailed as boolean,
+  });
+
+  return formatResponse(result);
+}
+
+async function handleMemoryMaintenance(
+  db: Db,
+  args: Record<string, unknown>
+): Promise<any> {
+  const memoryMaintenanceTool = new MemoryMaintenanceTool(db);
+
+  const result = await memoryMaintenanceTool.execute({
+    action: args.action as
+      | "cleanup_expired"
+      | "cleanup_old"
+      | "verify"
+      | "invalidate",
+    memoryId: args.memoryId as string,
+    confidenceThreshold: args.confidenceThreshold as number,
+    ageInDays: args.ageInDays as number,
+  });
+
+  return formatResponse(result);
+}
+
+/**
+ * 带 Memory 功能的工具调用处理函数
+ */
+async function handleCallToolRequestWithMemory({
+  request,
+  client,
+  db,
+  isReadOnlyMode,
+  schedulerManager,
+}: {
+  request: CallToolRequest;
+  client: MongoClient;
+  db: Db;
+  isReadOnlyMode: boolean;
+  schedulerManager?: SchedulerManager;
+}) {
+  const { name, arguments: args = {} } = request.params;
+
+  console.warn(`使用 Memory 系统处理工具调用: ${name}`);
+
+  // 创建 Memory 管理器
+  const memoryManager = new MemoryModel(db);
+
+  // 1. 检查是否有匹配的缓存
+  const cachedMemory = await memoryManager.findMemory(name, args, 0.8);
+
+  // 2. 如果有高置信度的缓存，直接使用
+  if (
+    cachedMemory &&
+    cachedMemory.resultInfo.confidence > 0.8 &&
+    (!cachedMemory.classification.expiresAt ||
+      cachedMemory.classification.expiresAt > new Date())
+  ) {
+    // 更新访问信息
+    await memoryManager.updateAccessInfo(cachedMemory._id);
+
+    console.warn(`找到匹配的 Memory 缓存，ID: ${cachedMemory._id}`);
+
+    // 添加 Memory 信息到响应
+    const result = cachedMemory.resultInfo.result;
+
+    // 标记为缓存结果
+    if (typeof result === "object" && result !== null) {
+      result._fromMemory = true;
+      result._memoryId = cachedMemory._id.toString();
+      result._confidence = cachedMemory.resultInfo.confidence;
+      result._cachedAt = cachedMemory.resultInfo.timestamp;
+    }
+
+    return formatResponse(result);
+  }
+
+  // 3. 如果没有缓存或置信度不够，执行实际调用
+  console.warn(`未找到匹配的缓存或置信度不足，执行实际调用`);
+
+  // 调用原始处理函数处理工具请求
+  const response = await handleCallToolRequest({
+    request,
+    client,
+    db,
+    isReadOnlyMode,
+  });
+
+  // 4. 获取实际结果并存储到 Memory（如果适合缓存）
+  try {
+    // 从响应中提取实际结果对象
+    const resultData = JSON.parse(response.content[0].text);
+
+    const shouldCache =
+      !name.startsWith("update_") &&
+      !name.startsWith("delete_") &&
+      !name.startsWith("transfer_") &&
+      !name.startsWith("add_") &&
+      typeof resultData === "object" &&
+      resultData !== null;
+
+    if (shouldCache) {
+      try {
+        console.warn(`存储结果到 Memory 缓存`);
+        const memory = await memoryManager.storeMemory(name, args, resultData);
+
+        // 添加 Memory ID 到结果
+        resultData._memoryId = memory._id.toString();
+
+        // 重新格式化响应
+        return formatResponse(resultData);
+      } catch (error) {
+        console.error(`存储 Memory 失败:`, error);
+      }
+    } else {
+      console.warn(`结果不适合缓存，跳过存储到 Memory`);
+    }
+  } catch (error) {
+    console.error(`处理响应结果失败:`, error);
+    // 如果处理失败，返回原始响应
+  }
+
+  // 如果无法处理或不应缓存，返回原始响应
+  return response;
+}
+
+export { handleCallToolRequest, handleCallToolRequestWithMemory };

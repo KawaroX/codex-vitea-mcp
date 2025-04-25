@@ -1,5 +1,6 @@
 import { type Collection, ObjectId, type Db } from "mongodb";
 import { Task, StructuredNote, ensureObjectId } from "./types.js";
+import { MemoryModel, EntityEvent } from "./memory.js";
 
 interface TaskWithStructuredNotes extends Omit<Task, "notes"> {
   notes: StructuredNote[];
@@ -39,7 +40,9 @@ export class TasksModel {
    * @param limit 限制返回任务数量
    * @returns 待办任务列表
    */
-  async getPendingTasks(limit: number = 10): Promise<TaskWithStructuredNotes[]> {
+  async getPendingTasks(
+    limit: number = 10
+  ): Promise<TaskWithStructuredNotes[]> {
     return await this.tasksCollection
       .find({ status: { $ne: "已完成" } })
       .sort({ dueDate: 1, priority: -1 })
@@ -52,7 +55,9 @@ export class TasksModel {
    * @param daysThreshold 到期天数阈值
    * @returns 即将到期的任务列表
    */
-  async getUpcomingTasks(daysThreshold: number = 7): Promise<TaskWithStructuredNotes[]> {
+  async getUpcomingTasks(
+    daysThreshold: number = 7
+  ): Promise<TaskWithStructuredNotes[]> {
     const now = new Date();
     const thresholdDate = new Date();
     thresholdDate.setDate(now.getDate() + daysThreshold);
@@ -265,24 +270,39 @@ export class TasksModel {
       // 查询更新后的任务
       const updatedTask = await this.getTaskById(id);
 
-      return {
+      const result = {
         success: true,
         task: updatedTask || undefined,
       };
+
+      // 生成任务状态更新事件用于更新 Memory
+      try {
+        const event = {
+          entityType: "task",
+          entityId: id,
+          eventType: EntityEvent.STATUS_CHANGED,
+          timestamp: new Date(),
+          details: {
+            previousStatus: oldStatus,
+            newStatus: newStatus,
+          },
+        };
+
+        // 发布事件
+        const memoryManager = new MemoryModel(this.db);
+        await memoryManager.processEntityEvent(event);
+      } catch (eventError) {
+        console.error("处理 Memory 事件失败:", eventError);
+        // 事件处理失败不影响主流程
+      }
+
+      return result;
     } catch (error) {
       return {
         success: false,
         error: `更新任务状态失败: ${error}`,
       };
     }
-  }
-
-  /**
-   * 获取有效的任务状态列表
-   * @returns 状态列表
-   */
-  async getValidTaskStatuses(): Promise<string[]> {
-    return ["未开始", "进行中", "已完成", "已取消", "已暂停", "待审核"];
   }
 
   /**
@@ -301,6 +321,12 @@ export class TasksModel {
   }> {
     try {
       const id = ensureObjectId(taskId);
+
+      // 获取原始任务
+      const originalTask = await this.getTaskById(id);
+      if (!originalTask) {
+        return { success: false, error: "未找到任务" };
+      }
 
       // 删除不应该直接更新的字段
       const { _id, createdAt, ...safeUpdateData } = updateData as any;
@@ -332,16 +358,52 @@ export class TasksModel {
       // 查询更新后的任务
       const updatedTask = await this.getTaskById(id);
 
-      return {
+      const updateResult = {
         success: true,
         task: updatedTask || undefined,
       };
+
+      // 生成任务更新事件用于更新 Memory
+      try {
+        const event = {
+          entityType: "task",
+          entityId: id,
+          eventType: EntityEvent.UPDATED,
+          timestamp: new Date(),
+          details: {
+            previousTask: {
+              name: originalTask.name,
+              status: originalTask.status,
+              dueDate: originalTask.dueDate,
+              priority: originalTask.priority,
+            },
+            updatedFields: Object.keys(safeUpdateData),
+          },
+        };
+
+        // 发布事件
+        const memoryManager = new MemoryModel(this.db);
+        await memoryManager.processEntityEvent(event);
+      } catch (eventError) {
+        console.error("处理 Memory 事件失败:", eventError);
+        // 事件处理失败不影响主流程
+      }
+
+      return updateResult;
     } catch (error) {
       return {
         success: false,
         error: `更新任务失败: ${error}`,
       };
     }
+  }
+
+  /**
+   * 获取有效的任务状态列表
+   * @returns 状态列表
+   */
+  async getValidTaskStatuses(): Promise<string[]> {
+    return ["未开始", "进行中", "已完成", "已取消", "已暂停", "待审核"];
   }
 
   /**

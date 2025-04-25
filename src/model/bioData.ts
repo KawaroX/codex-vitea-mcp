@@ -1,5 +1,6 @@
 import { type Collection, ObjectId, type Db } from "mongodb";
 import { BioData, ensureObjectId } from "./types.js";
+import { MemoryModel, EntityEvent } from "./memory.js";
 
 /**
  * 生物数据操作类
@@ -94,14 +95,113 @@ export class BioDataModel {
         _id: result.insertedId,
       });
 
-      return {
+      const addResult = {
         success: true,
         record: insertedRecord || undefined,
       };
+
+      // 生成生物数据添加事件用于更新 Memory
+      try {
+        const event = {
+          entityType: "biodata",
+          entityId: result.insertedId,
+          eventType: EntityEvent.CREATED,
+          timestamp: new Date(),
+          details: {
+            measurementType: data.measurementType,
+            value: data.value,
+            unit: data.unit,
+          },
+        };
+
+        // 发布事件
+        const memoryManager = new MemoryModel(this.db);
+        await memoryManager.processEntityEvent(event);
+      } catch (eventError) {
+        console.error("处理 Memory 事件失败:", eventError);
+        // 事件处理失败不影响主流程
+      }
+
+      return addResult;
     } catch (error) {
       return {
         success: false,
         error: `添加测量记录失败: ${error}`,
+      };
+    }
+  }
+
+  /**
+   * 删除测量记录
+   * @param recordId 记录ID
+   * @returns 操作结果
+   */
+  async deleteRecord(recordId: string | ObjectId): Promise<{
+    success: boolean;
+    error?: string;
+  }> {
+    try {
+      const id = ensureObjectId(recordId);
+
+      // 获取要删除的记录
+      const record = await this.getRecordById(id);
+
+      if (!record) {
+        return { success: false, error: "未找到测量记录" };
+      }
+
+      // 删除记录
+      const result = await this.bioDataCollection.deleteOne({ _id: id });
+
+      if (result.deletedCount === 0) {
+        return { success: false, error: "删除测量记录失败" };
+      }
+
+      // 如果删除的是最新记录，更新同类型的上一条记录为最新
+      if (record.isLatest) {
+        const previousRecord = await this.bioDataCollection
+          .find({
+            measurementType: record.measurementType,
+            _id: { $ne: id },
+          })
+          .sort({ measuredAt: -1 })
+          .limit(1)
+          .toArray();
+
+        if (previousRecord.length > 0) {
+          await this.bioDataCollection.updateOne(
+            { _id: previousRecord[0]._id },
+            { $set: { isLatest: true, updatedAt: new Date() } }
+          );
+        }
+      }
+
+      // 生成生物数据删除事件用于更新 Memory
+      try {
+        const event = {
+          entityType: "biodata",
+          entityId: id,
+          eventType: EntityEvent.DELETED,
+          timestamp: new Date(),
+          details: {
+            measurementType: record.measurementType,
+            recordName: record.recordName,
+          },
+        };
+
+        // 发布事件
+        const memoryManager = new MemoryModel(this.db);
+        await memoryManager.processEntityEvent(event);
+      } catch (eventError) {
+        console.error("处理 Memory 事件失败:", eventError);
+        // 事件处理失败不影响主流程
+      }
+
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: `删除测量记录失败: ${error}`,
       };
     }
   }
@@ -229,59 +329,5 @@ export class BioDataModel {
       unit: stats[0].units[0], // 使用最常见的单位
       latest: latest || undefined,
     };
-  }
-
-  /**
-   * 删除测量记录
-   * @param recordId 记录ID
-   * @returns 操作结果
-   */
-  async deleteRecord(recordId: string | ObjectId): Promise<{
-    success: boolean;
-    error?: string;
-  }> {
-    try {
-      const id = ensureObjectId(recordId);
-
-      // 获取要删除的记录
-      const record = await this.getRecordById(id);
-
-      if (!record) {
-        return { success: false, error: "未找到测量记录" };
-      }
-
-      // 删除记录
-      const result = await this.bioDataCollection.deleteOne({ _id: id });
-
-      if (result.deletedCount === 0) {
-        return { success: false, error: "删除测量记录失败" };
-      }
-
-      // 如果删除的是最新记录，更新同类型的上一条记录为最新
-      if (record.isLatest) {
-        const previousRecord = await this.bioDataCollection
-          .find({
-            measurementType: record.measurementType,
-            _id: { $ne: id },
-          })
-          .sort({ measuredAt: -1 })
-          .limit(1)
-          .toArray();
-
-        if (previousRecord.length > 0) {
-          await this.bioDataCollection.updateOne(
-            { _id: previousRecord[0]._id },
-            { $set: { isLatest: true, updatedAt: new Date() } }
-          );
-        }
-      }
-
-      return { success: true };
-    } catch (error) {
-      return {
-        success: false,
-        error: `删除测量记录失败: ${error}`,
-      };
-    }
   }
 }

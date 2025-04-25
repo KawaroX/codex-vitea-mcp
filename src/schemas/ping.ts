@@ -10,11 +10,13 @@ export async function handlePingRequest({
   client,
   db,
   isReadOnlyMode,
+  useMemory,
 }: {
   request: PingRequest;
   client: MongoClient;
   db: Db;
   isReadOnlyMode: boolean;
+  useMemory: boolean;
 }) {
   try {
     // 检查MongoDB连接
@@ -49,11 +51,28 @@ export async function handlePingRequest({
         `警告: 缺少以下ViteaOS集合: ${missingCollections.join(", ")}`
       );
     }
+    // 添加Memory系统状态信息
+    let memoryStats = null;
+    if (useMemory) {
+      // 查询Memory集合的一些基本统计信息
+      const memoriesCollection = db.collection("memories");
+      const totalCount = await memoriesCollection.countDocuments();
+      const expiredCount = await memoriesCollection.countDocuments({
+        "classification.expiresAt": { $lt: new Date() },
+      });
+
+      memoryStats = {
+        enabled: true,
+        totalCount,
+        expiredCount,
+      };
+    }
 
     return {
       vitea: {
-        version: "0.1.0",
+        version: "0.2.0",
         mode: isReadOnlyMode ? "只读" : "读写",
+        memory: memoryStats || { enabled: false },
         collections: {
           total: collections.length,
           vitea: requiredCollections.filter((name) =>
