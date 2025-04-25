@@ -22,6 +22,8 @@ export class FindItemTool {
     found: boolean;
     items?: StructuredItemLocationResponse[];
     message?: string;
+    itemId?: string;  // 单个物品ID
+    itemIds?: string[]; // 多个物品ID数组
   }> {
     try {
       const { itemName, exactMatch = false } = params;
@@ -43,6 +45,8 @@ export class FindItemTool {
           return {
             found: true,
             items: [itemInfo],
+            // 添加物品ID用于记忆创建
+            itemId: itemInfo.itemId,
           };
         } else {
           return {
@@ -63,11 +67,13 @@ export class FindItemTool {
 
         // 获取每个物品的位置信息
         const itemLocations: StructuredItemLocationResponse[] = [];
+        const itemIds: string[] = [];
 
         for (const item of items) {
           const locationInfo = await this.itemsModel.getItemLocation(item._id);
           if (locationInfo) {
             itemLocations.push(locationInfo);
+            itemIds.push(item._id.toString());
           }
         }
 
@@ -75,6 +81,8 @@ export class FindItemTool {
           return {
             found: true,
             items: itemLocations,
+            // 添加物品ID数组用于记忆创建
+            itemIds: itemIds,
           };
         } else {
           return {

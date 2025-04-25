@@ -21,6 +21,14 @@ export class LocationsModel {
   }
 
   /**
+   * 获取所有位置
+   * @returns 位置数组
+   */
+  async getAllLocations(): Promise<Location[]> {
+    return await this.locationsCollection.find({}).toArray();
+  }
+
+  /**
    * 根据关键词查找位置
    * @param searchTerm 搜索关键词
    * @returns 匹配的位置列表

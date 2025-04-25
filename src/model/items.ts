@@ -22,6 +22,14 @@ export class ItemsModel {
   }
 
   /**
+   * 获取所有物品
+   * @returns 物品数组
+   */
+  async getAllItems(): Promise<Item[]> {
+    return await this.itemsCollection.find({}).toArray();
+  }
+
+  /**
    * 根据关键词查找物品
    * @param searchTerm 搜索关键词
    * @returns 匹配的物品列表
@@ -350,6 +358,9 @@ export class ItemsModel {
             previousContainerId: previousState.containerId,
             newLocationId: targetLocationId,
             newContainerId: targetContainerId,
+            // 标记变更类型
+            locationChanged: previousState.locationId !== targetLocationId,
+            containerChanged: previousState.containerId !== targetContainerId,
           },
         };
 
@@ -467,18 +478,21 @@ export class ItemsModel {
 
       // 生成物品更新事件用于更新 Memory
       try {
-        const event = {
-          entityType: "item",
-          entityId: id,
-          eventType: EntityEvent.UPDATED,
-          timestamp: new Date(),
-          details: {
-            previousLocationId: originalItem.locationId,
-            previousContainerId: originalItem.containerId,
-            newLocationId: locationId,
-            newContainerId: containerId,
-          },
-        };
+      const event = {
+        entityType: "item",
+        entityId: id,
+        eventType: EntityEvent.UPDATED,
+        timestamp: new Date(),
+        details: {
+          previousLocationId: originalItem.locationId,
+          previousContainerId: originalItem.containerId,
+          newLocationId: locationId,
+          newContainerId: containerId,
+          // 标记变更类型
+          locationChanged: originalItem.locationId !== locationId,
+          statusChanged: originalItem.status !== updateObj.status,
+        },
+      };
 
         // 发布事件
         const memoryManager = new MemoryModel(this.db);

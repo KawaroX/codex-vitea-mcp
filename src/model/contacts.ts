@@ -15,6 +15,14 @@ export class ContactsModel {
   }
 
   /**
+   * 获取所有联系人
+   * @returns 联系人数组
+   */
+  async getAllContacts(): Promise<Contact[]> {
+    return await this.contactsCollection.find({}).toArray();
+  }
+
+  /**
    * 根据关键词查找联系人
    * @param searchTerm 搜索关键词
    * @returns 匹配的联系人列表

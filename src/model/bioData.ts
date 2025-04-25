@@ -15,6 +15,14 @@ export class BioDataModel {
   }
 
   /**
+   * 获取所有生物数据记录
+   * @returns 生物数据记录数组
+   */
+  async getAllBioData(): Promise<BioData[]> {
+    return await this.bioDataCollection.find({}).toArray();
+  }
+
+  /**
    * 获取最新的测量记录
    * @param measurementType 测量类型
    * @returns 最新的测量记录

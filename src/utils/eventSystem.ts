@@ -14,7 +14,7 @@ export type ExpirationRule = (event: EntityChangeEvent) => {
  * 过期规则集
  */
 export const expirationRules: Record<string, ExpirationRule> = {
-  // 物品移动规则
+  // 物品移动规则 - 降低置信度而非直接过期
   "item.transferred": (event: EntityChangeEvent) => ({
     query: {
       entityDependencies: {
@@ -23,22 +23,61 @@ export const expirationRules: Record<string, ExpirationRule> = {
           entityId: event.entityId,
         },
       },
-    },
-    action: "expire",
-  }),
-
-  // 物品更新规则
-  "item.updated": (event: EntityChangeEvent) => ({
-    query: {
-      entityDependencies: {
-        $elemMatch: {
-          entityType: "item",
-          entityId: event.entityId,
-        },
-      },
+      // 只影响位置相关的记忆
+      "resultInfo.tags": { $in: ["item_location"] }
     },
     action: "reduce_confidence",
   }),
+
+  // 物品更新规则 - 根据变更类型处理
+  "item.updated": (event: EntityChangeEvent) => {
+    const isStatusChange = event.details?.statusChanged;
+    const isLocationChange = event.details?.locationChanged;
+    
+    // 状态变更直接使记忆过期
+    if (isStatusChange) {
+      return {
+        query: {
+          entityDependencies: {
+            $elemMatch: {
+              entityType: "item",
+              entityId: event.entityId,
+            },
+          },
+        },
+        action: "expire",
+      };
+    }
+    
+    // 位置变更降低置信度
+    if (isLocationChange) {
+      return {
+        query: {
+          entityDependencies: {
+            $elemMatch: {
+              entityType: "item",
+              entityId: event.entityId,
+            },
+          },
+          "resultInfo.tags": { $in: ["item_location"] }
+        },
+        action: "reduce_confidence",
+      };
+    }
+
+    // 默认处理 - 降低置信度
+    return {
+      query: {
+        entityDependencies: {
+          $elemMatch: {
+            entityType: "item",
+            entityId: event.entityId,
+          },
+        },
+      },
+      action: "reduce_confidence",
+    };
+  },
 
   // 物品删除规则
   "item.deleted": (event: EntityChangeEvent) => ({
@@ -194,40 +233,49 @@ export async function processEntityEvent(
   event: EntityChangeEvent,
   memoryCollection: any
 ): Promise<number> {
-  // 1. 确定适用的规则
-  const specificRuleKey = `${event.entityType}.${event.eventType}`;
-  const genericRuleKey = `*.${event.eventType}`;
+  try {
+    // 1. 确定适用的规则
+    const specificRuleKey = `${event.entityType}.${event.eventType}`;
+    const genericRuleKey = `*.${event.eventType}`;
 
-  let rule = expirationRules[specificRuleKey];
+    let rule = expirationRules[specificRuleKey];
 
-  if (!rule) {
-    rule = expirationRules[genericRuleKey];
+    if (!rule) {
+      rule = expirationRules[genericRuleKey];
+    }
+
+    if (!rule) {
+      return 0; // 无匹配规则
+    }
+
+    // 2. 应用规则，获取查询条件和动作
+    const { query, action } = rule(event);
+
+    // 3. 执行相应动作
+    if (action === "expire") {
+      // 立即使匹配的 Memory 过期
+      const result = await memoryCollection.updateMany(query, {
+        $set: {
+          "classification.expiresAt": new Date(),
+          "resultInfo.confidence": 0,
+          lastModified: new Date(),
+        },
+      });
+      return result.modifiedCount;
+    } else if (action === "reduce_confidence") {
+      // 降低置信度到0.5（而不是乘以0.5）
+      const result = await memoryCollection.updateMany(query, {
+        $set: {
+          "resultInfo.confidence": 0.5,
+          lastModified: new Date(),
+        },
+      });
+      return result.modifiedCount;
+    }
+
+    return 0;
+  } catch (error) {
+    console.error(`处理实体事件失败: ${error}`);
+    return 0;
   }
-
-  if (!rule) {
-    return 0; // 无匹配规则
-  }
-
-  // 2. 应用规则，获取查询条件和动作
-  const { query, action } = rule(event);
-
-  // 3. 执行相应动作
-  if (action === "expire") {
-    // 立即使匹配的 Memory 过期
-    const result = await memoryCollection.updateMany(query, {
-      $set: {
-        "classification.expiresAt": new Date(),
-        "resultInfo.confidence": 0,
-      },
-    });
-    return result.modifiedCount;
-  } else if (action === "reduce_confidence") {
-    // 降低置信度
-    const result = await memoryCollection.updateMany(query, {
-      $mul: { "resultInfo.confidence": 0.5 },
-    });
-    return result.modifiedCount;
-  }
-
-  return 0;
 }

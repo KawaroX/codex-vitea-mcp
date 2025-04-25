@@ -24,8 +24,16 @@ export function generateTemplateHash(
  * @returns 抽象后的参数
  */
 export function abstractQueryParameters(toolName: string, params: any): any {
-  // 创建参数副本
+  // 创建参数副本并标准化
   const abstractParams = { ...params };
+
+  // 参数标准化处理
+  if (abstractParams.itemName) {
+    abstractParams.itemName = abstractParams.itemName
+      .toLowerCase()
+      .trim()
+      .normalize('NFKC');
+  }
 
   // 根据工具类型进行特定处理
   switch (toolName) {
@@ -223,8 +231,25 @@ export function extractEntityDependencies(
   // 工具特定逻辑
   switch (toolName) {
     case "find_item":
-      // 对于查找物品，我们无法直接提取依赖
-      // 因为只提供了名称，没有ID
+      // 从查找结果中提取物品ID
+      if (params.itemId && isObjectIdString(params.itemId)) {
+        dependencies.push({
+          entityType: "item",
+          entityId: new ObjectId(params.itemId),
+          relationshipType: EntityRelationshipType.PRIMARY,
+        });
+      }
+      if (params.itemIds && Array.isArray(params.itemIds)) {
+        for (const id of params.itemIds) {
+          if (isObjectIdString(id)) {
+            dependencies.push({
+              entityType: "item",
+              entityId: new ObjectId(id),
+              relationshipType: EntityRelationshipType.PRIMARY,
+            });
+          }
+        }
+      }
       break;
 
     case "estimate_time":
@@ -408,6 +433,17 @@ export function calculateParameterSimilarity(
 
   // 如果参数是基本类型，直接比较
   if (typeof params1 !== "object" || params1 === null || params2 === null) {
+    if (typeof params1 === 'string' && typeof params2 === 'string') {
+      // 使用改进的字符串相似度算法
+      const str1 = params1.toLowerCase().trim().normalize('NFKC');
+      const str2 = params2.toLowerCase().trim().normalize('NFKC');
+      if (str1 === str2) return 1;
+      
+      // 计算编辑距离相似度
+      const len = Math.max(str1.length, str2.length);
+      const distance = levenshteinDistance(str1, str2);
+      return 1 - (distance / len);
+    }
     return params1 === params2 ? 1 : 0;
   }
 
@@ -474,7 +510,8 @@ export function isObjectIdString(str: any): boolean {
  */
 export function calculateStorageTier(
   toolName: string,
-  parameters: any
+  parameters: any,
+  accessFrequency?: number
 ): string {
   // 默认层级映射
   const defaultTierByTool: Record<string, string> = {
@@ -488,6 +525,13 @@ export function calculateStorageTier(
     get_latest_biodata: "short_term",
     get_pending_tasks: "short_term",
   };
+
+  // 基于访问频率的动态层级调整
+  if (accessFrequency !== undefined) {
+    if (accessFrequency > 10) return "long_term";
+    if (accessFrequency > 5) return "mid_term";
+    return "short_term";
+  }
 
   // 默认层级
   const defaultTier = defaultTierByTool[toolName] || "mid_term";
@@ -551,7 +595,7 @@ export function calculateExpiryTime(
  * @param toolName 工具名称
  * @returns 初始置信度(0-1)
  */
-export function calculateInitialConfidence(toolName: string): number {
+export function calculateInitialConfidence(toolName: string, queryCount: number = 1): number {
   // 不同工具的基础置信度
   const baseConfidenceByTool: Record<string, number> = {
     find_item: 0.9, // 物品查找结果通常可靠
@@ -565,7 +609,11 @@ export function calculateInitialConfidence(toolName: string): number {
     get_pending_tasks: 0.7, // 待办任务变化快
   };
 
-  return baseConfidenceByTool[toolName] || 0.8;
+  // 基于查询次数调整置信度
+  const baseConfidence = baseConfidenceByTool[toolName] || 0.8;
+  const frequencyBonus = Math.min(0.1, queryCount * 0.02);
+  
+  return Math.min(1, baseConfidence + frequencyBonus);
 }
 
 /**
@@ -574,6 +622,37 @@ export function calculateInitialConfidence(toolName: string): number {
  * @param parameters 参数
  * @returns 标签数组
  */
+// 计算Levenshtein编辑距离
+function levenshteinDistance(a: string, b: string): number {
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+
+  const matrix = Array(b.length + 1).fill(null).map(() => 
+    Array(a.length + 1).fill(null)
+  );
+
+  for (let i = 0; i <= a.length; i++) {
+    matrix[0][i] = i;
+  }
+
+  for (let j = 0; j <= b.length; j++) {
+    matrix[j][0] = j;
+  }
+
+  for (let j = 1; j <= b.length; j++) {
+    for (let i = 1; i <= a.length; i++) {
+      const substitutionCost = a[i - 1] === b[j - 1] ? 0 : 1;
+      matrix[j][i] = Math.min(
+        matrix[j][i - 1] + 1,
+        matrix[j - 1][i] + 1,
+        matrix[j - 1][i - 1] + substitutionCost
+      );
+    }
+  }
+
+  return matrix[b.length][a.length];
+}
+
 export function generateTags(toolName: string, parameters: any): string[] {
   const tags = [toolName];
 
