@@ -1,4 +1,5 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { contextManager } from "./utils/ContextManager.js";
 import {
   CallToolRequestSchema,
   ListResourcesRequestSchema,
@@ -117,6 +118,8 @@ export function createServer(
           db,
           isReadOnlyMode,
           schedulerManager: schedulerManager || null,
+          // 获取或创建上下文ID
+          contextId: contextManager.createContext(),
         })
       : handleCallToolRequest({
           request,

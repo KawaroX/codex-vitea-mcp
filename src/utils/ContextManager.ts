@@ -3,12 +3,15 @@ import { analyzeQuery, generateQueryFingerprint } from "./memoryUtils.js";
 
 // 查询步骤记录
 export interface QueryStep {
+  id: string;
   timestamp: Date;
   toolName: string;
   params: any;
   result: any;
   fingerprint: string;
   complexity: number;
+  previousStepId?: string;
+  relationToPrevious?: string;
 }
 
 // 查询上下文
@@ -86,6 +89,7 @@ export class ContextManager {
 
     // 创建查询步骤
     const step: QueryStep = {
+      id: crypto.randomUUID(),
       timestamp: new Date(),
       toolName,
       params,
@@ -93,6 +97,21 @@ export class ContextManager {
       fingerprint,
       complexity: analysis.complexityScore,
     };
+
+    // 更新步骤之间的关系
+    if (context.steps.length > 0) {
+      // 获取上一步
+      const previousStep = context.steps[context.steps.length - 1];
+      
+      // 添加步骤关系标记
+      step.previousStepId = previousStep.id;
+      
+      // 尝试发现步骤间的语义关联
+      const relation = this.detectStepRelation(previousStep, step);
+      if (relation) {
+        step.relationToPrevious = relation;
+      }
+    }
 
     // 添加步骤到上下文
     context.steps.push(step);
@@ -105,6 +124,28 @@ export class ContextManager {
     this.contexts.set(contextId, context);
 
     return step;
+  }
+
+  /**
+   * 检测步骤之间的关系
+   */
+  private detectStepRelation(previous: QueryStep, current: QueryStep): string | null {
+    // 实体传递关系
+    if (previous.result && previous.result.entityId && 
+        current.params && (current.params.entityId === previous.result.entityId)) {
+      return "entity_transfer";
+    }
+    
+    // 位置传递关系
+    if (previous.toolName === "query_location" && current.toolName === "estimate_time" &&
+        previous.result && previous.result.location && current.params && 
+        (current.params.origin === previous.result.location.name)) {
+      return "location_transfer";
+    }
+    
+    // 其他关系类型检测...
+    
+    return null;
   }
 
   /**

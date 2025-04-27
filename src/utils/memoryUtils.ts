@@ -46,7 +46,7 @@ export function analyzeQuery(toolName: string, params: any): QueryAnalysis {
     // 简单查询
     case "find_item":
     case "query_item":
-      complexityScore += 1; // 低复杂度
+      complexityScore += 0; // 低复杂度
       break;
 
     // 实时数据 - 不应缓存
@@ -96,7 +96,7 @@ export function analyzeQuery(toolName: string, params: any): QueryAnalysis {
 
   // 4. 确定缓存策略
   let shouldCache = false;
-  let expiryDays = 1; // 默认1天
+  let expiryDays = 7; // 默认7天
   let initialConfidence = 0.7;
   let cacheTier = "short_term";
   let isRealtime = false;
@@ -110,7 +110,7 @@ export function analyzeQuery(toolName: string, params: any): QueryAnalysis {
   } else if (complexityScore >= 3) {
     // 中等复杂度查询 - 中期缓存
     shouldCache = true;
-    expiryDays = 14; // 两周
+    expiryDays = 30; // 30天
     initialConfidence = 0.8;
     cacheTier = "mid_term";
   } else if (complexityScore > 0) {

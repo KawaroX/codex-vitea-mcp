@@ -225,8 +225,6 @@ export class MemoryManager {
   /**
    * 查找记忆
    */
-  // 在memory.ts中优化findMemory方法
-
   async findMemory(
     toolName: string,
     params: any,
@@ -295,22 +293,57 @@ export class MemoryManager {
         if (contextMatches.length > 0) {
           // 返回最相关的上下文匹配
           // 优先返回完全匹配的复合记忆
+          // 改进复合记忆匹配逻辑
           for (const match of contextMatches) {
-            if (
-              match.query.isCompound &&
-              match.query.originalParams &&
-              match.query.originalParams.steps
-            ) {
+            if (match.query.isCompound && match.query.originalParams?.steps) {
               const steps = match.query.originalParams.steps;
-              // 检查是否包含当前查询
-              const hasMatchingStep = steps.some(
-                (step) =>
-                  step.toolName === toolName &&
-                  calculateParameterSimilarity(step.params, params) > 0.8
+              
+              // 1. 检查精确匹配步骤
+              const exactMatch = steps.find(
+                step => step.toolName === toolName && 
+                       step.fingerprint === generateQueryFingerprint(toolName, params)
               );
+              if (exactMatch) {
+                console.log(`找到精确匹配的复合记忆步骤: ${match._id}`);
+                await this.updateMemoryStats(match._id);
+                return match;
+              }
 
-              if (hasMatchingStep) {
-                console.log(`找到包含当前查询的复合记忆: ${match._id}`);
+              // 2. 检查相似参数步骤
+              const similarSteps = steps
+                .filter(step => step.toolName === toolName)
+                .map(step => ({
+                  step,
+                  similarity: calculateParameterSimilarity(step.params, params)
+                }))
+                .filter(item => item.similarity > 0.7)
+                .sort((a, b) => b.similarity - a.similarity);
+
+              if (similarSteps.length > 0) {
+                console.log(`找到相似参数步骤 (相似度: ${similarSteps[0].similarity.toFixed(2)})`);
+                await this.updateMemoryStats(match._id);
+                return match;
+              }
+
+              // 3. 检查关键参数匹配
+              const hasKeyParamMatch = steps.some(step => {
+                if (step.toolName !== toolName) return false;
+                
+                // 物品查询匹配物品名称
+                if (toolName === 'find_item' && step.params.itemName === params.itemName) {
+                  return true;
+                }
+                // 时间估算匹配起终点
+                if (toolName === 'estimate_time' && 
+                    step.params.origin === params.origin && 
+                    step.params.destination === params.destination) {
+                  return true;
+                }
+                return false;
+              });
+
+              if (hasKeyParamMatch) {
+                console.log(`找到关键参数匹配的复合记忆: ${match._id}`);
                 await this.updateMemoryStats(match._id);
                 return match;
               }
@@ -483,6 +516,7 @@ export class MemoryManager {
     try {
       // 计算总复杂度
       let totalComplexity = 0;
+      const keyEntities = new Set();
 
       console.log(`计算复合查询复杂度，步骤数: ${steps.length}`);
 
@@ -493,6 +527,11 @@ export class MemoryManager {
           `步骤 ${step.toolName} 复杂度: ${analysis.complexityScore}`
         );
         totalComplexity += analysis.complexityScore;
+
+        // 收集关键实体ID
+        if (step.result && step.result.entityId) {
+          keyEntities.add(step.result.entityId.toString());
+        }
       }
 
       // 添加上下文奖励 - 相关步骤之间的关联性增加复杂度
@@ -523,9 +562,12 @@ export class MemoryManager {
       const compoundParams = {
         _isCompound: true,
         contextId,
-        steps: steps.map((step) => ({
-          toolName: step.toolName,
-          params: step.params,
+        entityIds: Array.from(keyEntities),
+        querySignature: this.generateCompoundSignature(steps),
+        steps: steps.map((s) => ({
+          toolName: s.toolName,
+          params: s.params,
+          fingerprint: generateQueryFingerprint(s.toolName, s.params),
         })),
       };
 
@@ -553,6 +595,29 @@ export class MemoryManager {
       console.error("存储复合记忆时出错:", error);
       return null;
     }
+  }
+
+  private generateCompoundSignature(steps: any[]): string {
+    // 提取步骤中的关键参数
+    const keyParams = steps
+      .map((step) => {
+        const toolName = step.toolName;
+        const params = step.params;
+
+        // 针对不同工具提取关键信息
+        switch (toolName) {
+          case "query_contact":
+            return params.contactName || params.relationship || "";
+          case "estimate_time":
+            return `${params.origin}-${params.destination}`;
+          default:
+            return "";
+        }
+      })
+      .filter((p) => p !== "");
+
+    // 生成签名
+    return keyParams.join("|");
   }
 
   /**

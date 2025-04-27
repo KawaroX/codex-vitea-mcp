@@ -630,14 +630,38 @@ async function handleGetPendingTasks(db: Db, args: Record<string, unknown>) {
   });
 }
 
+interface MemoryMetadata {
+  fromMemory: boolean;
+  lastUpdated?: string;
+  confidence?: string;
+}
+
 /**
  * 格式化响应为标准格式
  * @param data 响应数据
+ * @param memoryInfo 记忆相关信息(可选)
  * @returns 格式化后的响应
  */
-function formatResponse(data: any): {
+function formatResponse(
+  data: any,
+  memoryInfo?: {
+    fromMemory?: boolean;
+    timestamp?: Date;
+    confidence?: number;
+  }
+): {
   content: [{ type: string; text: string }];
 } {
+  // 添加记忆元数据
+  if (memoryInfo?.fromMemory) {
+    const memoryMetadata: MemoryMetadata = {
+      fromMemory: true,
+      lastUpdated: memoryInfo.timestamp?.toISOString(),
+      confidence: memoryInfo.confidence?.toFixed(2),
+    };
+    data._memoryMetadata = memoryMetadata;
+  }
+
   return {
     content: [
       {
@@ -875,34 +899,34 @@ async function handleCallToolRequestWithMemory({
   schedulerManager?: SchedulerManager | null;
 }) {
   const { name, arguments: args = {} } = request.params;
-  
+
   // 1. 获取或创建上下文
   if (!contextId) {
     contextId = contextManager.createContext();
   }
-  
+
   // 2. 分析查询复杂度
   const analysis = analyzeQuery(name, args);
-  
+
   console.log(`工具 ${name} 的复杂度评分: ${analysis.complexityScore}`);
-  
+
   // 3. 创建或获取Memory管理器
   const memory = memoryManager(db);
-  
+
   // 4. 判断是否使用记忆 - 只对中高复杂度查询使用记忆
   let resultFromMemory = null;
-  
+
   if (analysis.complexityScore >= 3 && analysis.shouldCache) {
     try {
       // 尝试从记忆中查找
       resultFromMemory = await memory.findMemory(name, args, {
         confidenceThreshold: 0.7,
-        contextId: contextId
+        contextId: contextId,
       });
-      
+
       if (resultFromMemory) {
         console.log(`从记忆中获取结果: ${resultFromMemory._id}`);
-        
+
         // 记录到上下文
         contextManager.addQueryStep(
           contextId,
@@ -910,21 +934,25 @@ async function handleCallToolRequestWithMemory({
           args,
           resultFromMemory.result.data
         );
-        
+
         // 添加记忆信息到结果
         const resultData = resultFromMemory.result.data;
         resultData._fromMemory = true;
         resultData._memoryId = resultFromMemory._id.toString();
         resultData._confidence = resultFromMemory.result.confidence;
-        
-        return formatResponse(resultData);
+
+        return formatResponse(resultData, {
+          fromMemory: resultData._fromMemory,
+          timestamp: resultFromMemory?.timestamp,
+          confidence: resultFromMemory?.result?.confidence,
+        });
       }
     } catch (error) {
       console.error(`从记忆获取结果时出错: ${error}`);
       // 错误不中断流程，继续正常调用
     }
   }
-  
+
   // 5. 执行实际工具调用
   console.log(`执行工具调用: ${name}`);
   const response = await handleCallToolRequest({
@@ -933,29 +961,29 @@ async function handleCallToolRequestWithMemory({
     db,
     isReadOnlyMode,
   });
-  
+
   try {
     // 从响应中提取结果
     const resultData = JSON.parse(response.content[0].text);
-    
+
     // 6. 记录查询步骤到上下文
     contextManager.addQueryStep(contextId, name, args, resultData);
-    
+
     // 7. 判断是否存储记忆
     if (analysis.complexityScore >= 3 && analysis.shouldCache) {
       try {
         // 检查是否有实体依赖
         const dependencies: any[] = [];
-        
+
         // 调用特定方法提取依赖 - 这里需要实现
         extractEntityDependencies(name, args, resultData, dependencies);
-        
+
         // 存储记忆
         const storedMemory = await memory.storeMemory(name, args, resultData, {
           contextId,
-          dependencies
+          dependencies,
         });
-        
+
         if (storedMemory) {
           console.log(`存储记忆: ${storedMemory._id}`);
           resultData._memoryId = storedMemory._id.toString();
@@ -965,26 +993,26 @@ async function handleCallToolRequestWithMemory({
         console.error(`存储记忆时出错: ${error}`);
       }
     }
-    
+
     // 8. 检查上下文是否应该创建复合记忆
     if (contextManager.isCompoundQuery(contextId)) {
       try {
         const context = contextManager.getContext(contextId);
-        
+
         if (context && context.steps.length >= 3) {
           // 提取所有步骤
-          const steps = context.steps.map(step => ({
+          const steps = context.steps.map((step) => ({
             toolName: step.toolName,
             params: step.params,
-            result: step.result
+            result: step.result,
           }));
-          
+
           // 创建复合记忆
           const compoundMemory = await memory.storeCompoundMemory(
             contextId,
             steps
           );
-          
+
           if (compoundMemory) {
             console.log(`创建复合记忆: ${compoundMemory._id}`);
           }
@@ -993,7 +1021,7 @@ async function handleCallToolRequestWithMemory({
         console.error(`创建复合记忆时出错: ${error}`);
       }
     }
-    
+
     // 重新格式化响应
     return formatResponse(resultData);
   } catch (error) {
@@ -1020,7 +1048,7 @@ function extractEntityDependencies(
         dependencies.push({
           entityType: "item",
           entityId: result.itemId,
-          relationship: "primary"
+          relationship: "primary",
         });
       }
       if (result.items && Array.isArray(result.items)) {
@@ -1029,33 +1057,33 @@ function extractEntityDependencies(
             dependencies.push({
               entityType: "item",
               entityId: item.itemId,
-              relationship: "primary"
+              relationship: "primary",
             });
           }
         });
       }
       break;
-      
+
     case "estimate_time":
       if (result.estimation) {
         if (result.estimation.origin && result.estimation.origin.id) {
           dependencies.push({
             entityType: "location",
             entityId: result.estimation.origin.id,
-            relationship: "primary"
+            relationship: "primary",
           });
         }
-        
+
         if (result.estimation.destination && result.estimation.destination.id) {
           dependencies.push({
             entityType: "location",
             entityId: result.estimation.destination.id,
-            relationship: "primary"
+            relationship: "primary",
           });
         }
       }
       break;
-      
+
     // 添加其他工具的依赖提取逻辑...
   }
 }
