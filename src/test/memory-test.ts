@@ -1,4 +1,4 @@
-import { MemoryModel, EntityEvent } from "../src/model/memory.js";
+import { MemoryModel, EntityEvent } from "../model/memory.js";
 import { MongoClient, ObjectId } from "mongodb";
 
 async function testMemorySystem() {

@@ -1,167 +1,71 @@
-// src/model/memory.ts
+// 完全重写的Memory模型
+
 import { ObjectId, Collection, Db } from "mongodb";
-import { processEntityEvent as processEvent } from "../utils/eventSystem.js";
 import {
-  abstractQueryParameters,
-  calculateExpiryTime,
-  calculateInitialConfidence,
+  analyzeQuery,
   calculateParameterSimilarity,
-  calculateStorageTier,
-  extractEntityDependencies,
-  generateTags,
-  generateTemplateHash,
-  categorizeRoute,
-  isImportantData,
-  categorizeItem,
-  calculateStringSimilarity,
+  generateQueryFingerprint,
 } from "../utils/memoryUtils.js";
-import { ensureObjectId } from "./types.js";
 
-/**
- * Memory 存储层级
- */
+// 记忆存储层级
 export enum MemoryTier {
-  SHORT_TERM = "short_term", // 短期记忆（默认1天）
-  MID_TERM = "mid_term", // 中期记忆（默认2周）
-  LONG_TERM = "long_term", // 长期记忆（默认无限期）
+  SHORT_TERM = "short_term", // 短期记忆
+  MID_TERM = "mid_term", // 中期记忆
+  LONG_TERM = "long_term", // 长期记忆
 }
 
-/**
- * 实体依赖关系类型
- */
-export enum EntityRelationshipType {
-  PRIMARY = "primary", // 主要依赖
-  SECONDARY = "secondary", // 次要依赖
-  REFERENCE = "reference", // 引用关系
-}
-
-/**
- * 匹配查询结果
- */
-async function findMatchingMemory(
-  toolName: string,
-  params: any,
-  memoryCollection: any,
-  confidenceThreshold: number = 0.7
-): Promise<Memory | null> {
-  // 1. 抽象查询参数
-  const abstractParams = abstractQueryParameters(toolName, params);
-
-  // 2. 生成模板哈希
-  const templateHash = generateTemplateHash(toolName, abstractParams);
-
-  // 3. 根据工具名称和模板哈希进行精确查询
-  const exactMatches = await memoryCollection
-    .find({
-      "queryInfo.toolName": toolName,
-      "queryInfo.templateHash": templateHash,
-      "resultInfo.confidence": { $gte: confidenceThreshold },
-    })
-    .sort({ "resultInfo.confidence": -1 })
-    .toArray();
-
-  // 4. 检查是否有过期的匹配
-  const validMatches = exactMatches.filter(
-    (memory: Memory) =>
-      !memory.classification.expiresAt ||
-      memory.classification.expiresAt > new Date()
-  );
-
-  // 5. 如果没有有效匹配，返回 null
-  if (validMatches.length === 0) {
-    return null;
-  }
-
-  // 6. 计算参数相似度并排序
-  const rankedMatches = validMatches
-    .map((memory: Memory) => ({
-      memory,
-      similarity: calculateParameterSimilarity(
-        params,
-        memory.queryInfo.originalParameters
-      ),
-    }))
-    .sort((a, b) => b.similarity - a.similarity);
-
-  // 7. 返回最佳匹配
-  return rankedMatches[0].memory;
-}
-
-/**
- * Memory 数据模型接口
- */
+// 记忆数据结构
 export interface Memory {
   _id: ObjectId;
+
+  _similarityScore?: number;
+
   // 查询信息
-  queryInfo: {
+  query: {
     toolName: string; // 工具名称
-    templateHash: string; // 查询模板哈希
-    originalParameters: any; // 原始参数
-    abstractParameters: any; // 抽象后的参数
+    fingerprint: string; // 查询指纹
+    originalParams: any; // 原始参数
+    complexityScore: number; // 复杂度分数
+    isCompound: boolean; // 是否是复合查询
+    contextId?: string; // 上下文ID (仅复合查询)
+    metadata: any; // 元数据
   };
+
   // 结果信息
-  resultInfo: {
-    result: any; // 查询结果
+  result: {
+    data: any; // 结果数据
     timestamp: Date; // 查询时间
+    confidence: number; // 置信度
     validated: boolean; // 是否已验证
-    confidence: number; // 置信度(0-1)
   };
-  // 关联实体
-  entityDependencies: Array<{
-    entityType: string; // 实体类型(item, location, contact, task, biodata)
-    entityId: ObjectId; // 实体ID
-    relationshipType: EntityRelationshipType; // 关系类型
-  }>;
+
   // 使用统计
-  usageStats: {
+  stats: {
     accessCount: number; // 访问次数
+    hitCount: number; // 命中次数
     lastAccessed: Date; // 最后访问时间
     createdAt: Date; // 创建时间
   };
-  // 分类信息
-  classification: {
+
+  // 存储信息
+  storage: {
     tier: MemoryTier; // 存储层级
     expiresAt: Date | null; // 过期时间
     tags: string[]; // 标签
   };
+
+  // 实体依赖
+  dependencies: Array<{
+    entityType: string; // 实体类型
+    entityId: ObjectId; // 实体ID
+    relationship: string; // 关系类型
+  }>;
 }
 
-/**
- * 实体变更事件类型
- */
-export enum EntityEvent {
-  CREATED = "created",
-  UPDATED = "updated",
-  DELETED = "deleted",
-  TRANSFERRED = "transferred", // 物品特有
-  STATUS_CHANGED = "statusChanged", // 任务特有
-  NOTE_ADDED = "noteAdded", // 通用
-}
-
-/**
- * 实体变更事件接口
- */
-export interface EntityChangeEvent {
-  entityType: string; // 实体类型
-  entityId: ObjectId; // 实体ID
-  eventType: EntityEvent; // 事件类型
-  timestamp: Date; // 事件时间
-  details?: any; // 事件详情
-}
-
-/**
- * Memory 管理类
- */
-export class MemoryModel {
+// Memory管理器
+export class MemoryManager {
   private memoryCollection: Collection<Memory>;
   private db: Db;
-  private lastQueries: Map<
-    string,
-    {
-      params: any;
-      timestamp: Date;
-    }
-  > = new Map();
 
   constructor(db: Db) {
     this.db = db;
@@ -169,396 +73,867 @@ export class MemoryModel {
   }
 
   /**
-   * 创建索引，确保性能
+   * 创建索引
    */
   async createIndexes(): Promise<void> {
-    // 创建查询模板哈希索引
-    await this.memoryCollection.createIndex({ "queryInfo.templateHash": 1 });
+    // 指纹索引
+    await this.memoryCollection.createIndex({ "query.fingerprint": 1 });
 
-    // 创建工具名称索引
-    await this.memoryCollection.createIndex({ "queryInfo.toolName": 1 });
+    // 工具名索引
+    await this.memoryCollection.createIndex({ "query.toolName": 1 });
 
-    // 创建实体依赖复合索引
+    // 复杂度索引
+    await this.memoryCollection.createIndex({ "query.complexityScore": 1 });
+
+    // 上下文索引
+    await this.memoryCollection.createIndex({ "query.contextId": 1 });
+
+    // 过期时间索引
+    await this.memoryCollection.createIndex({ "storage.expiresAt": 1 });
+
+    // 置信度索引
+    await this.memoryCollection.createIndex({ "result.confidence": 1 });
+
+    // 实体依赖索引
     await this.memoryCollection.createIndex({
-      "entityDependencies.entityType": 1,
-      "entityDependencies.entityId": 1,
+      "dependencies.entityType": 1,
+      "dependencies.entityId": 1,
     });
-
-    // 创建过期时间索引
-    await this.memoryCollection.createIndex({ "classification.expiresAt": 1 });
-
-    // 创建置信度索引
-    await this.memoryCollection.createIndex({ "resultInfo.confidence": 1 });
-
-    // 创建层级索引
-    await this.memoryCollection.createIndex({ "classification.tier": 1 });
-
-    // 创建最后访问时间索引
-    await this.memoryCollection.createIndex({ "usageStats.lastAccessed": 1 });
   }
 
   /**
-   * 存储查询结果到 Memory
+   * 存储记忆
    */
   async storeMemory(
     toolName: string,
-    parameters: any,
-    result: any
+    params: any,
+    result: any,
+    options: {
+      contextId?: string;
+      isCompound?: boolean;
+      dependencies?: Array<{
+        entityType: string;
+        entityId: ObjectId;
+        relationship: string;
+      }>;
+      // 添加这些新参数
+      complexityScore?: number;
+      tier?: string;
+      expiryDays?: number | null;
+      initialConfidence?: number;
+    } = {}
   ): Promise<Memory> {
-    // 1. 抽象查询参数
-    const abstractParams = abstractQueryParameters(toolName, parameters);
+    // 分析查询
+    const analysis = analyzeQuery(toolName, params);
 
-    // 2. 提取实体依赖
-    const dependencies = extractEntityDependencies(toolName, parameters);
+    // 如果提供了复杂度，使用提供的值覆盖分析结果
+    if (options.complexityScore !== undefined) {
+      analysis.complexityScore = options.complexityScore;
+    }
 
-    // 3. 计算初始置信度和过期时间
-    const tier = calculateStorageTier(toolName, parameters);
-    const initialConfidence = calculateInitialConfidence(toolName);
-    const expiresAt = calculateExpiryTime(tier as MemoryTier, toolName);
+    // 如果提供了存储层级，使用提供的值
+    if (options.tier) {
+      analysis.cacheTier = options.tier;
+    }
 
-    // 4. 生成模板哈希
-    const templateHash = generateTemplateHash(toolName, abstractParams);
+    // 如果提供了过期天数，使用提供的值
+    if (options.expiryDays !== undefined) {
+      analysis.expiryDays = options.expiryDays;
+    }
 
-    // 5. 生成标签
-    const tags = generateTags(toolName, parameters);
+    // 如果提供了初始置信度，使用提供的值
+    if (options.initialConfidence !== undefined) {
+      analysis.initialConfidence = options.initialConfidence;
+    }
 
-    // 6. 创建 Memory 记录
+    // 如果不应缓存，直接返回null
+    if (!analysis.shouldCache && !options.isCompound) {
+      throw new Error("Query should not be cached");
+    }
+
+    // 生成查询指纹
+    const fingerprint = generateQueryFingerprint(toolName, params);
+
+    // 计算过期时间
+    let expiresAt: Date | null = null;
+    if (analysis.expiryDays !== null) {
+      expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + analysis.expiryDays);
+    }
+
+    // 处理依赖关系
+    const dependencies = options.dependencies || [];
+
+    // 处理标签
+    const tags = [toolName];
+    if (analysis.metadata.itemCategory) {
+      tags.push(`item:${analysis.metadata.itemCategory}`);
+    }
+    if (analysis.metadata.routeType) {
+      tags.push(`route:${analysis.metadata.routeType}`);
+    }
+
+    // 创建记忆对象
     const memory: Partial<Memory> = {
-      queryInfo: {
+      query: {
         toolName,
-        templateHash,
-        originalParameters: parameters,
-        abstractParameters: abstractParams,
+        fingerprint: generateQueryFingerprint(toolName, params),
+        originalParams: params,
+        complexityScore: analysis.complexityScore, // 使用可能被覆盖的值
+        isCompound: options.isCompound || false,
+        metadata: analysis.metadata,
       },
-      resultInfo: {
-        result,
+      result: {
+        data: result,
         timestamp: new Date(),
+        confidence: analysis.initialConfidence, // 使用可能被覆盖的值
         validated: false,
-        confidence: initialConfidence,
       },
-      entityDependencies: dependencies,
-      usageStats: {
+      stats: {
         accessCount: 1,
+        hitCount: 0,
         lastAccessed: new Date(),
         createdAt: new Date(),
       },
-      classification: {
-        tier: tier as MemoryTier,
+      storage: {
+        tier: analysis.cacheTier as MemoryTier, // 使用可能被覆盖的值
         expiresAt,
-        tags,
+        tags: [toolName, ...generateTags(analysis)],
       },
+      dependencies: dependencies.map((dep) => ({
+        entityType: dep.entityType,
+        entityId:
+          typeof dep.entityId === "string" &&
+          /^[0-9a-fA-F]{24}$/.test(dep.entityId)
+            ? new ObjectId(dep.entityId)
+            : dep.entityId,
+        relationship: dep.relationship,
+      })),
     };
 
-    // 7. 插入记录
-    const insertResult = await this.memoryCollection.insertOne(
-      memory as Memory
-    );
+    // 如果是复合查询，添加上下文ID
+    if (options.contextId) {
+      memory.query!.contextId = options.contextId;
+    }
 
-    return { ...memory, _id: insertResult.insertedId } as Memory;
+    // 插入记忆
+    const result2 = await this.memoryCollection.insertOne(memory as Memory);
+
+    return { ...memory, _id: result2.insertedId } as Memory;
   }
 
   /**
-   * 查找匹配的 Memory，增强版
+   * 查找记忆
    */
+  // 在memory.ts中优化findMemory方法
+
   async findMemory(
     toolName: string,
-    parameters: any,
-    confidenceThreshold: number = 0.7
+    params: any,
+    options: {
+      confidenceThreshold?: number;
+      contextId?: string;
+    } = {}
   ): Promise<Memory | null> {
     try {
-      // 1. 获取当前查询信息
-      const currentParams = { ...parameters };
+      // 默认置信度阈值
+      const confidenceThreshold = options.confidenceThreshold || 0.7;
 
-      // 2. 检查是否需要跳过记忆查询
-      if (this.shouldSkipMemory(toolName, currentParams)) {
-        console.log(`跳过记忆查询: ${toolName}`);
-        // 更新最后查询
-        this.updateLastQuery(toolName, currentParams);
+      // 分析查询
+      const analysis = analyzeQuery(toolName, params);
+      console.log(`查询复杂度: ${analysis.complexityScore} (${toolName})`);
+
+      // 如果有上下文ID，我们允许低复杂度查询
+      const minComplexity = options.contextId ? 0 : 3;
+
+      // 1. 如果复杂度不足且没有上下文，不使用记忆
+      if (analysis.complexityScore < minComplexity) {
+        console.log(
+          `跳过记忆查询: 复杂度不足 (${analysis.complexityScore} < ${minComplexity})`
+        );
         return null;
       }
 
-      // 3. 继续正常的记忆查询逻辑
-      const abstractParams = abstractQueryParameters(toolName, currentParams);
-      const templateHash = generateTemplateHash(toolName, abstractParams);
+      // 2. 生成查询指纹
+      const fingerprint = generateQueryFingerprint(toolName, params);
 
-      // 4. 从数据库查询符合条件的记忆
-      const memories = await this.memoryCollection
+      // 3. 尝试精确匹配 - 根据指纹
+      const exactMatch = await this.memoryCollection.findOne({
+        "query.fingerprint": fingerprint,
+        "result.confidence": { $gte: confidenceThreshold },
+        $or: [
+          { "storage.expiresAt": null },
+          { "storage.expiresAt": { $gt: new Date() } },
+        ],
+      });
+
+      if (exactMatch) {
+        console.log(`精确匹配成功: ${exactMatch._id}`);
+        // 更新统计信息
+        await this.updateMemoryStats(exactMatch._id);
+        return exactMatch;
+      }
+
+      // 4. 如果有上下文ID，查找相关记忆
+      if (options.contextId) {
+        console.log(`尝试查找上下文 ${options.contextId} 相关记忆`);
+
+        // 查找上下文相关记忆
+        const contextMatches = await this.memoryCollection
+          .find({
+            "query.contextId": options.contextId,
+            "result.confidence": { $gte: confidenceThreshold },
+            $or: [
+              { "storage.expiresAt": null },
+              { "storage.expiresAt": { $gt: new Date() } },
+            ],
+          })
+          .toArray();
+
+        console.log(`找到 ${contextMatches.length} 个上下文相关记忆`);
+
+        if (contextMatches.length > 0) {
+          // 返回最相关的上下文匹配
+          // 优先返回完全匹配的复合记忆
+          for (const match of contextMatches) {
+            if (
+              match.query.isCompound &&
+              match.query.originalParams &&
+              match.query.originalParams.steps
+            ) {
+              const steps = match.query.originalParams.steps;
+              // 检查是否包含当前查询
+              const hasMatchingStep = steps.some(
+                (step) =>
+                  step.toolName === toolName &&
+                  calculateParameterSimilarity(step.params, params) > 0.8
+              );
+
+              if (hasMatchingStep) {
+                console.log(`找到包含当前查询的复合记忆: ${match._id}`);
+                await this.updateMemoryStats(match._id);
+                return match;
+              }
+            }
+          }
+
+          // 如果没有完全匹配，返回最新的上下文记忆
+          const latestMatch = contextMatches.sort(
+            (a, b) =>
+              b.stats.lastAccessed.getTime() - a.stats.lastAccessed.getTime()
+          )[0];
+
+          console.log(`返回最新的上下文记忆: ${latestMatch._id}`);
+          await this.updateMemoryStats(latestMatch._id);
+          return latestMatch;
+        }
+      }
+
+      // 5. 宽松查询条件，尝试模糊匹配
+      // 使用更宽松的条件找到潜在匹配
+      console.log(`尝试模糊匹配...`);
+
+      const potentialMatches = await this.memoryCollection
         .find({
-          "queryInfo.toolName": toolName,
-          "queryInfo.templateHash": templateHash,
-          "resultInfo.confidence": { $gte: confidenceThreshold },
+          "query.toolName": toolName,
+          "result.confidence": { $gte: confidenceThreshold * 0.8 },
+          $or: [
+            { "storage.expiresAt": null },
+            { "storage.expiresAt": { $gt: new Date() } },
+          ],
         })
-        .sort({ "resultInfo.confidence": -1 })
+        .limit(10)
         .toArray();
 
-      // 5. 过滤掉过期记忆
-      const validMemories = memories.filter(
-        (memory) =>
-          !memory.classification.expiresAt ||
-          memory.classification.expiresAt > new Date()
-      );
+      console.log(`找到 ${potentialMatches.length} 个潜在匹配`);
 
-      if (validMemories.length === 0) {
-        this.updateLastQuery(toolName, currentParams);
+      if (potentialMatches.length === 0) {
         return null;
       }
 
-      // 6. 计算相似度并排序
-      const rankedMemories = validMemories
-        .map((memory) => ({
-          memory,
-          similarity: calculateParameterSimilarity(
-            currentParams,
-            memory.queryInfo.originalParameters
-          ),
-        }))
-        .filter((item) => item.similarity > 0.75) // 使用更高的相似度阈值
+      // 6. 改进相似度计算
+      const rankedMatches = potentialMatches
+        .map((memory) => {
+          // 基础参数相似度
+          let paramSimilarity = calculateParameterSimilarity(
+            params,
+            memory.query.originalParams
+          );
+
+          // 添加元数据相似度奖励
+          let metadataSimilarity = 0;
+
+          // 对于物品查询，比较物品类别
+          if (
+            toolName === "find_item" &&
+            analysis.metadata.itemCategory &&
+            memory.query.metadata.itemCategory
+          ) {
+            if (
+              analysis.metadata.itemCategory ===
+              memory.query.metadata.itemCategory
+            ) {
+              metadataSimilarity += 0.1;
+            }
+          }
+
+          // 对于时间估算，比较路线类型
+          if (
+            toolName === "estimate_time" &&
+            analysis.metadata.routeType &&
+            memory.query.metadata.routeType
+          ) {
+            if (
+              analysis.metadata.routeType === memory.query.metadata.routeType
+            ) {
+              metadataSimilarity += 0.1;
+            }
+          }
+
+          // 计算总相似度
+          const totalSimilarity = paramSimilarity + metadataSimilarity;
+
+          return {
+            memory,
+            similarity: totalSimilarity,
+            details: {
+              paramSimilarity,
+              metadataSimilarity,
+            },
+          };
+        })
+        // 使用更低的相似度阈值
+        .filter((item) => item.similarity > 0.7)
         .sort((a, b) => b.similarity - a.similarity);
 
-      if (rankedMemories.length === 0) {
-        this.updateLastQuery(toolName, currentParams);
+      if (rankedMatches.length === 0) {
+        console.log(`没有超过相似度阈值的匹配`);
         return null;
       }
 
-      // 7. 更新最佳匹配的访问信息
-      const bestMatch = rankedMemories[0].memory;
-      await this.updateAccessInfo(bestMatch._id);
+      // 7. 返回最佳匹配
+      const bestMatch = rankedMatches[0];
+      console.log(
+        `找到最佳匹配: ${
+          bestMatch.memory._id
+        }, 相似度: ${bestMatch.similarity.toFixed(3)}`
+      );
+      console.log(`相似度详情:`, bestMatch.details);
 
-      // 8. 记录当前查询
-      this.updateLastQuery(toolName, currentParams);
+      // 将相似度添加到记忆对象
+      bestMatch.memory._similarityScore = bestMatch.similarity;
 
-      return bestMatch;
+      await this.updateMemoryStats(bestMatch.memory._id);
+      return bestMatch.memory;
     } catch (error) {
-      console.error("记忆查询出错:", error);
+      console.error("查找记忆时出错:", error);
+      return null;
+    }
+  }
+
+  async findMemoryById(memoryId: ObjectId | string): Promise<Memory | null> {
+    try {
+      const id =
+        typeof memoryId === "string" ? new ObjectId(memoryId) : memoryId;
+      return await this.memoryCollection.findOne({ _id: id });
+    } catch (error) {
+      console.error("根据ID查找记忆时出错:", error);
       return null;
     }
   }
 
   /**
-   * 判断是否应跳过记忆查询
+   * 更新记忆统计信息
    */
-  private shouldSkipMemory(toolName: string, params: any): boolean {
-    // 1. 检查是否为重要或敏感数据
-    if (isImportantData(toolName, params)) {
-      return true;
-    }
-
-    // 2. 获取上次查询
-    const lastQuery = this.lastQueries.get(toolName);
-    if (!lastQuery) {
-      return false; // 首次查询，不跳过
-    }
-
-    // 3. 检查时间间隔 - 短时间内的查询可以复用
-    const timeDiff = new Date().getTime() - lastQuery.timestamp.getTime();
-    if (timeDiff < 1000) {
-      // 1秒内的相同查询直接复用
-      return false;
-    }
-
-    // 4. 对于不同类型的工具，使用不同的策略
-    switch (toolName) {
-      case "find_item":
-        // 检查物品类别是否相同
-        const currentCategory = categorizeItem(params.itemName || "");
-        const lastCategory = categorizeItem(lastQuery.params.itemName || "");
-
-        // 不同类别的物品直接跳过
-        if (currentCategory !== lastCategory) {
-          return true;
-        }
-
-        // 计算物品名称相似度
-        const similarity = calculateStringSimilarity(
-          params.itemName || "",
-          lastQuery.params.itemName || ""
-        );
-
-        // 相似度低，认为是不同物品
-        return similarity < 0.5;
-
-      case "estimate_time":
-        // 检查路线是否相似
-        const currentRouteType = categorizeRoute(
-          params.origin || "",
-          params.destination || ""
-        );
-        const lastRouteType = categorizeRoute(
-          lastQuery.params.origin || "",
-          lastQuery.params.destination || ""
-        );
-
-        // 不同类型的路线直接跳过
-        return currentRouteType !== lastRouteType;
-    }
-
-    // 默认不跳过
-    return false;
-  }
-
-  /**
-   * 更新最后查询记录
-   */
-  private updateLastQuery(toolName: string, params: any): void {
-    this.lastQueries.set(toolName, {
-      params: { ...params },
-      timestamp: new Date(),
-    });
-  }
-
-  /**
-   * 更新 Memory 的访问信息
-   */
-  async updateAccessInfo(memoryId: ObjectId | string): Promise<void> {
-    const id = typeof memoryId === "string" ? new ObjectId(memoryId) : memoryId;
-
-    await this.memoryCollection.updateOne(
-      { _id: id },
-      {
-        $inc: { "usageStats.accessCount": 1 },
-        $set: { "usageStats.lastAccessed": new Date() },
-      }
-    );
-
-    // 更新置信度和层级（频繁访问的记忆可能升级）
-    await this.updateTierBasedOnUsage(id);
-  }
-
-  /**
-   * 基于使用频率更新 Memory 层级
-   */
-  private async updateTierBasedOnUsage(memoryId: ObjectId): Promise<void> {
-    const memory = await this.memoryCollection.findOne({ _id: memoryId });
-
-    if (!memory) return;
-
-    // 判断是否应该升级层级
-    const { accessCount, createdAt } = memory.usageStats;
-    const ageInDays =
-      (new Date().getTime() - createdAt.getTime()) / (1000 * 60 * 60 * 24);
-
-    // 简单的升级逻辑示例
-    let newTier = memory.classification.tier;
-
-    if (
-      memory.classification.tier === MemoryTier.SHORT_TERM &&
-      (accessCount > 5 || ageInDays > 3)
-    ) {
-      newTier = MemoryTier.MID_TERM;
-    } else if (
-      memory.classification.tier === MemoryTier.MID_TERM &&
-      (accessCount > 20 || ageInDays > 30)
-    ) {
-      newTier = MemoryTier.LONG_TERM;
-    }
-
-    // 如果层级变更，更新过期时间
-    if (newTier !== memory.classification.tier) {
-      const newExpiresAt = calculateExpiryTime(
-        newTier,
-        memory.queryInfo.toolName
-      );
-
+  async updateMemoryStats(memoryId: ObjectId): Promise<void> {
+    try {
       await this.memoryCollection.updateOne(
         { _id: memoryId },
         {
+          $inc: {
+            "stats.accessCount": 1,
+            "stats.hitCount": 1,
+          },
           $set: {
-            "classification.tier": newTier,
-            "classification.expiresAt": newExpiresAt,
+            "stats.lastAccessed": new Date(),
           },
         }
       );
-    }
-  }
-
-  /**
-   * 验证 Memory
-   */
-  async verifyMemory(memoryId: ObjectId | string): Promise<void> {
-    const id = typeof memoryId === "string" ? new ObjectId(memoryId) : memoryId;
-
-    await this.memoryCollection.updateOne(
-      { _id: id },
-      {
-        $set: {
-          "resultInfo.validated": true,
-          "resultInfo.confidence": 1.0,
-        },
-      }
-    );
-  }
-
-  /**
-   * 使 Memory 失效
-   */
-  async invalidateMemory(memoryId: ObjectId | string): Promise<void> {
-    const id = typeof memoryId === "string" ? new ObjectId(memoryId) : memoryId;
-
-    await this.memoryCollection.updateOne(
-      { _id: id },
-      {
-        $set: {
-          "classification.expiresAt": new Date(),
-          "resultInfo.confidence": 0,
-        },
-      }
-    );
-  }
-
-  /**
-   * 清理过期 Memory
-   */
-  async cleanupExpiredMemories(olderThan: Date = new Date()): Promise<number> {
-    const result = await this.memoryCollection.deleteMany({
-      "classification.expiresAt": { $lt: olderThan },
-      "resultInfo.confidence": { $lt: 0.2 },
-    });
-
-    return result.deletedCount;
-  }
-
-  /**
-   * 处理实体变更事件
-   */
-  async processEntityEvent(event: EntityChangeEvent): Promise<number> {
-    return processEvent(event, this.memoryCollection);
-  }
-
-  // In src/model/memory.ts
-
-  // Add a method to update the memory collection schema if needed
-  async updateMemorySchema(): Promise<void> {
-    try {
-      // Check if we need to add new fields
-      const sample = await this.memoryCollection.findOne({});
-
-      // If no memories yet, nothing to update
-      if (!sample) return;
-
-      // Check and update memories missing new fields
-      const updates = [];
-
-      // Example: Add mediumConfidence tracking
-      if (
-        sample.resultInfo &&
-        sample.resultInfo.confidence >= 0.5 &&
-        sample.resultInfo.confidence < 0.8
-      ) {
-        updates.push({
-          updateMany: {
-            filter: { "resultInfo.confidence": { $gte: 0.5, $lt: 0.8 } },
-            update: { $set: { mediumConfidence: true } },
-          },
-        });
-      }
-
-      // Execute updates if needed
-      if (updates.length > 0) {
-        await this.memoryCollection.bulkWrite(updates);
-        console.log("Memory schema updated successfully");
-      }
     } catch (error) {
-      console.error("Failed to update memory schema:", error);
+      console.error("更新记忆统计信息时出错:", error);
     }
   }
+
+  /**
+   * 存储复合记忆
+   */
+  async storeCompoundMemory(
+    contextId: string,
+    steps: Array<{
+      toolName: string;
+      params: any;
+      result: any;
+    }>,
+    dependencies: Array<{
+      entityType: string;
+      entityId: ObjectId;
+      relationship: string;
+    }> = []
+  ): Promise<Memory | null> {
+    try {
+      // 计算总复杂度
+      let totalComplexity = 0;
+
+      console.log(`计算复合查询复杂度，步骤数: ${steps.length}`);
+
+      // 计算每个步骤的复杂度并加总
+      for (const step of steps) {
+        const analysis = analyzeQuery(step.toolName, step.params);
+        console.log(
+          `步骤 ${step.toolName} 复杂度: ${analysis.complexityScore}`
+        );
+        totalComplexity += analysis.complexityScore;
+      }
+
+      // 添加上下文奖励 - 相关步骤之间的关联性增加复杂度
+      // 相关步骤越多，奖励越高
+      const contextBonus = Math.min(steps.length * 0.5, 2);
+      totalComplexity += contextBonus;
+
+      console.log(`复合查询原始复杂度: ${totalComplexity - contextBonus}`);
+      console.log(`上下文奖励: ${contextBonus}`);
+      console.log(`最终复杂度: ${totalComplexity}`);
+
+      // 确定存储层级 - 复杂度高的复合记忆应该保存更长时间
+      let tier = "short_term";
+      let expiryDays = 1;
+      let initialConfidence = 0.7;
+
+      if (totalComplexity >= 12) {
+        tier = "long_term";
+        expiryDays = null;
+        initialConfidence = 0.9;
+      } else if (totalComplexity >= 8) {
+        tier = "mid_term";
+        expiryDays = 14;
+        initialConfidence = 0.8;
+      }
+
+      // 创建复合查询参数
+      const compoundParams = {
+        _isCompound: true,
+        contextId,
+        steps: steps.map((step) => ({
+          toolName: step.toolName,
+          params: step.params,
+        })),
+      };
+
+      // 创建复合结果
+      const compoundResult = {
+        results: steps.map((step) => step.result),
+      };
+
+      // 存储复合记忆
+      return await this.storeMemory(
+        "compound_query",
+        compoundParams,
+        compoundResult,
+        {
+          contextId,
+          isCompound: true,
+          dependencies,
+          complexityScore: totalComplexity,
+          tier,
+          expiryDays,
+          initialConfidence,
+        }
+      );
+    } catch (error) {
+      console.error("存储复合记忆时出错:", error);
+      return null;
+    }
+  }
+
+  /**
+   * 验证记忆
+   */
+  async validateMemory(memoryId: ObjectId | string): Promise<boolean> {
+    try {
+      const id =
+        typeof memoryId === "string" ? new ObjectId(memoryId) : memoryId;
+
+      const result = await this.memoryCollection.updateOne(
+        { _id: id },
+        {
+          $set: {
+            "result.validated": true,
+            "result.confidence": 1.0,
+          },
+        }
+      );
+
+      return result.modifiedCount > 0;
+    } catch (error) {
+      console.error("验证记忆时出错:", error);
+      return false;
+    }
+  }
+
+  /**
+   * 使记忆失效
+   */
+  async invalidateMemory(memoryId: ObjectId | string): Promise<boolean> {
+    try {
+      const id =
+        typeof memoryId === "string" ? new ObjectId(memoryId) : memoryId;
+
+      const result = await this.memoryCollection.updateOne(
+        { _id: id },
+        {
+          $set: {
+            "result.confidence": 0,
+            "storage.expiresAt": new Date(),
+          },
+        }
+      );
+
+      return result.modifiedCount > 0;
+    } catch (error) {
+      console.error("使记忆失效时出错:", error);
+      return false;
+    }
+  }
+
+  /**
+   * 处理实体更新事件
+   */
+  async handleEntityUpdate(
+    entityType: string,
+    entityId: ObjectId | string,
+    updateType: "created" | "updated" | "deleted"
+  ): Promise<number> {
+    try {
+      const id =
+        typeof entityId === "string" ? new ObjectId(entityId) : entityId;
+
+      // 获取所有相关记忆及其关系类型
+      const relatedMemories = await this.memoryCollection
+        .find({
+          "dependencies.entityType": entityType,
+          "dependencies.entityId": id,
+        })
+        .toArray();
+
+      let modifiedCount = 0;
+
+      // 区分不同关系类型的影响程度
+      for (const memory of relatedMemories) {
+        let update: any;
+        const dependency = memory.dependencies.find(
+          (d) =>
+            d.entityType === entityType &&
+            d.entityId.toString() === id.toString()
+        );
+
+        if (!dependency) continue;
+
+        switch (updateType) {
+          case "deleted":
+            // 实体被删除，记忆失效
+            update = {
+              $set: {
+                "result.confidence": 0,
+                "storage.expiresAt": new Date(),
+              },
+            };
+            break;
+
+          case "updated":
+            // 实体更新，根据关系类型降低置信度
+            const confidenceMultiplier =
+              dependency.relationship === "primary"
+                ? 0.5 // 主要依赖影响大
+                : dependency.relationship === "secondary"
+                ? 0.7 // 次要依赖影响中等
+                : 0.9; // 引用关系影响小
+
+            update = {
+              $mul: { "result.confidence": confidenceMultiplier },
+            };
+            break;
+
+          case "created":
+            // 新实体创建，轻微影响同类型实体的记忆
+            if (dependency.relationship === "reference") {
+              update = {
+                $mul: { "result.confidence": 0.95 },
+              };
+            } else {
+              continue; // 不影响主要和次要依赖
+            }
+            break;
+        }
+
+        // 执行更新
+        const result = await this.memoryCollection.updateOne(
+          { _id: memory._id },
+          update
+        );
+
+        if (result.modifiedCount > 0) {
+          modifiedCount++;
+        }
+      }
+
+      return modifiedCount;
+    } catch (error) {
+      console.error("处理实体更新事件时出错:", error);
+      return 0;
+    }
+  }
+
+  /**
+   * 清理过期记忆
+   */
+  async cleanupExpiredMemories(): Promise<number> {
+    try {
+      // 删除过期且置信度低的记忆
+      const result = await this.memoryCollection.deleteMany({
+        "storage.expiresAt": { $lt: new Date() },
+        "result.confidence": { $lt: 0.3 },
+      });
+
+      return result.deletedCount;
+    } catch (error) {
+      console.error("清理过期记忆时出错:", error);
+      return 0;
+    }
+  }
+
+  /**
+   * 获取记忆系统统计信息
+   */
+  async getMemoryStats(): Promise<{
+    total: number;
+    byTier: Record<string, number>;
+    byConfidence: {
+      high: number;
+      medium: number;
+      low: number;
+    };
+    expired: number;
+    validated: number;
+    hitRate: number;
+  }> {
+    try {
+      const total = await this.memoryCollection.countDocuments();
+
+      // 按层级统计
+      const shortTerm = await this.memoryCollection.countDocuments({
+        "storage.tier": MemoryTier.SHORT_TERM,
+      });
+
+      const midTerm = await this.memoryCollection.countDocuments({
+        "storage.tier": MemoryTier.MID_TERM,
+      });
+
+      const longTerm = await this.memoryCollection.countDocuments({
+        "storage.tier": MemoryTier.LONG_TERM,
+      });
+
+      // 按置信度统计
+      const highConfidence = await this.memoryCollection.countDocuments({
+        "result.confidence": { $gte: 0.8 },
+      });
+
+      const mediumConfidence = await this.memoryCollection.countDocuments({
+        "result.confidence": { $gte: 0.5, $lt: 0.8 },
+      });
+
+      const lowConfidence = await this.memoryCollection.countDocuments({
+        "result.confidence": { $lt: 0.5 },
+      });
+
+      // 其他统计
+      const expired = await this.memoryCollection.countDocuments({
+        "storage.expiresAt": { $lt: new Date() },
+      });
+
+      const validated = await this.memoryCollection.countDocuments({
+        "result.validated": true,
+      });
+
+      // 计算命中率
+      const accessStats = await this.memoryCollection
+        .aggregate([
+          {
+            $group: {
+              _id: null,
+              totalAccess: { $sum: "$stats.accessCount" },
+              totalHits: { $sum: "$stats.hitCount" },
+            },
+          },
+        ])
+        .toArray();
+
+      const hitRate =
+        accessStats.length > 0 && accessStats[0].totalAccess > 0
+          ? accessStats[0].totalHits / accessStats[0].totalAccess
+          : 0;
+
+      return {
+        total,
+        byTier: {
+          short_term: shortTerm,
+          mid_term: midTerm,
+          long_term: longTerm,
+        },
+        byConfidence: {
+          high: highConfidence,
+          medium: mediumConfidence,
+          low: lowConfidence,
+        },
+        expired,
+        validated,
+        hitRate,
+      };
+    } catch (error) {
+      console.error("获取记忆系统统计信息时出错:", error);
+      return {
+        total: 0,
+        byTier: {
+          short_term: 0,
+          mid_term: 0,
+          long_term: 0,
+        },
+        byConfidence: {
+          high: 0,
+          medium: 0,
+          low: 0,
+        },
+        expired: 0,
+        validated: 0,
+        hitRate: 0,
+      };
+    }
+  }
+}
+
+// 导出单例实例
+export const memoryManager = (db: Db) => new MemoryManager(db);
+
+// 保留原来的事件类型枚举，用于兼容
+export enum EntityEvent {
+  CREATED = "created",
+  UPDATED = "updated",
+  DELETED = "deleted",
+  TRANSFERRED = "transferred",
+  STATUS_CHANGED = "statusChanged",
+  NOTE_ADDED = "noteAdded",
+}
+
+// 兼容性类，模拟原来的MemoryModel
+export class MemoryModel {
+  private db: Db;
+  private memoryManagerInstance: ReturnType<typeof memoryManager>;
+
+  constructor(db: Db) {
+    this.db = db;
+    this.memoryManagerInstance = memoryManager(db);
+  }
+
+  // 兼容旧的processEntityEvent方法
+  async processEntityEvent(event: {
+    entityType: string;
+    entityId: ObjectId;
+    eventType: EntityEvent;
+    timestamp: Date;
+    details?: any;
+  }): Promise<number> {
+    try {
+      // 将旧的事件类型映射到新的处理方法
+      let updateType: "created" | "updated" | "deleted";
+
+      switch (event.eventType) {
+        case EntityEvent.CREATED:
+          updateType = "created";
+          break;
+        case EntityEvent.DELETED:
+          updateType = "deleted";
+          break;
+        default:
+          updateType = "updated";
+          break;
+      }
+
+      // 调用新的处理方法
+      return await this.memoryManagerInstance.handleEntityUpdate(
+        event.entityType,
+        event.entityId,
+        updateType
+      );
+    } catch (error) {
+      console.error("处理实体事件时出错:", error);
+      return 0;
+    }
+  }
+
+  // 兼容其他可能被调用的方法
+  async findMemory(
+    toolName: string,
+    params: any,
+    threshold?: number
+  ): Promise<any> {
+    return this.memoryManagerInstance.findMemory(toolName, params, {
+      confidenceThreshold: threshold,
+    });
+  }
+
+  async storeMemory(toolName: string, params: any, result: any): Promise<any> {
+    return this.memoryManagerInstance.storeMemory(toolName, params, result);
+  }
+
+  async updateAccessInfo(memoryId: ObjectId): Promise<void> {
+    return this.memoryManagerInstance.updateMemoryStats(memoryId);
+  }
+
+  // 添加清理过期记忆的方法
+  async cleanupExpiredMemories(olderThan: Date = new Date()): Promise<number> {
+    return this.memoryManagerInstance.cleanupExpiredMemories();
+  }
+
+  // 添加验证记忆的方法
+  async verifyMemory(memoryId: ObjectId | string): Promise<boolean> {
+    return this.memoryManagerInstance.validateMemory(memoryId);
+  }
+
+  // 添加使记忆失效的方法
+  async invalidateMemory(memoryId: ObjectId | string): Promise<boolean> {
+    return this.memoryManagerInstance.invalidateMemory(memoryId);
+  }
+}
+
+// 新增函数，根据分析生成标签
+function generateTags(analysis: any): string[] {
+  const tags: string[] = [];
+
+  if (analysis.metadata.itemCategory) {
+    tags.push(`item:${analysis.metadata.itemCategory}`);
+  }
+
+  if (analysis.metadata.routeType) {
+    tags.push(`route:${analysis.metadata.routeType}`);
+  }
+
+  // 添加复杂度标签
+  if (analysis.complexityScore >= 6) {
+    tags.push("high_complexity");
+  } else if (analysis.complexityScore >= 3) {
+    tags.push("medium_complexity");
+  } else {
+    tags.push("low_complexity");
+  }
+
+  return tags;
 }

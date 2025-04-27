@@ -1,20 +1,19 @@
 import { Db } from "mongodb";
 import { LocationsModel } from "../model/locations.js";
 import { TravelTimeEstimationResponse } from "../model/types.js";
-import { isImportantData } from "../utils/memoryUtils.js";
-import { MemoryModel } from "../model/memory.js";
+import { analyzeQuery } from "../utils/memoryUtils.js";
+import { memoryManager } from "../model/memory.js";
 
 /**
  * 出行时间估算工具
- * 用于估算从一个地点到另一个地点所需的时间
  */
 export class EstimateTimeTool {
   private locationsModel: LocationsModel;
-  private memoryModel: MemoryModel;
+  private db: Db;
 
   constructor(db: Db) {
     this.locationsModel = new LocationsModel(db);
-    this.memoryModel = new MemoryModel(db);
+    this.db = db;
   }
 
   /**
@@ -22,15 +21,21 @@ export class EstimateTimeTool {
    * @param params 估算参数
    * @returns 估算结果
    */
-  async execute(params: { origin: string; destination: string }): Promise<{
+  async execute(params: {
+    origin: string;
+    destination: string;
+    _contextId?: string; // 新增：上下文ID
+  }): Promise<{
     success: boolean;
     estimation?: TravelTimeEstimationResponse;
     message?: string;
+    _fromMemory?: boolean; // 新增：标记结果来源
+    _memoryId?: string; // 新增：记忆ID
   }> {
     try {
-      const { origin, destination } = params;
+      const { origin, destination, _contextId } = params;
 
-      // 1. 验证参数
+      // 验证参数
       if (!origin || !destination) {
         return {
           success: false,
@@ -38,26 +43,33 @@ export class EstimateTimeTool {
         };
       }
 
-      // 2. 检查记忆 - 使用增强的记忆管理
-      const memoryResult = await this.memoryModel.findMemory(
-        "estimate_time",
-        {
-          origin,
-          destination,
-          _queryTime: Date.now(),
-        },
-        0.8
-      );
+      // 分析查询复杂度
+      const analysis = analyzeQuery("estimate_time", params);
 
-      if (memoryResult) {
-        return {
-          success: true,
-          estimation: memoryResult.resultInfo.result.estimation,
-          message: "来自记忆的时间估算",
-        };
+      // 如果复杂度足够，尝试从记忆获取
+      if (analysis.complexityScore >= 3 && analysis.shouldCache) {
+        try {
+          const memory = memoryManager(this.db);
+          const result = await memory.findMemory("estimate_time", params, {
+            contextId: _contextId,
+            confidenceThreshold: 0.7,
+          });
+
+          if (result) {
+            // 从记忆中获取结果
+            return {
+              ...result.result.data,
+              _fromMemory: true,
+              _memoryId: result._id.toString(),
+            };
+          }
+        } catch (error) {
+          console.error("从记忆获取时间估算时出错:", error);
+          // 错误不中断流程
+        }
       }
 
-      // 3. 估算时间
+      // 执行实际估算
       const estimation = await this.locationsModel.estimateTravelTime(
         origin,
         destination
@@ -73,25 +85,57 @@ export class EstimateTimeTool {
       const result = {
         success: true,
         estimation,
+        message: `从${estimation.origin.name}到${estimation.destination.name}预计需要${estimation.estimatedTime}${estimation.unit}`,
+      } as {
+        success: boolean;
+        estimation?: TravelTimeEstimationResponse;
+        message?: string;
+        _fromMemory?: boolean;
+        _memoryId?: string;
       };
 
-      // 4. 存储结果到记忆
-      // 判断是否需要存储（不是特殊路线）
-      const isSpecialRoute = isImportantData("estimate_time", {
-        origin,
-        destination,
-      });
+      // 如果复杂度足够，存储记忆
+      if (analysis.complexityScore >= 3 && analysis.shouldCache) {
+        try {
+          const memory = memoryManager(this.db);
 
-      if (!isSpecialRoute) {
-        await this.memoryModel.storeMemory(
-          "estimate_time",
-          {
-            origin,
-            destination,
-            _queryTime: Date.now(),
-          },
-          result
-        );
+          // 提取依赖实体
+          const dependencies = [];
+
+          if (estimation.origin.id) {
+            dependencies.push({
+              entityType: "location",
+              entityId: estimation.origin.id,
+              relationship: "primary",
+            });
+          }
+
+          if (estimation.destination.id) {
+            dependencies.push({
+              entityType: "location",
+              entityId: estimation.destination.id,
+              relationship: "primary",
+            });
+          }
+
+          // 存储记忆
+          const newMemory = await memory.storeMemory(
+            "estimate_time",
+            params,
+            result,
+            {
+              contextId: _contextId,
+              dependencies,
+            }
+          );
+
+          if (newMemory) {
+            result._memoryId = newMemory._id.toString();
+          }
+        } catch (error) {
+          console.error("存储时间估算记忆时出错:", error);
+          // 错误不中断流程
+        }
       }
 
       return result;
@@ -105,9 +149,7 @@ export class EstimateTimeTool {
   }
 
   /**
-   * 格式化响应为易读文本
-   * @param result 估算结果
-   * @returns 易读格式的结果描述
+   * 格式化响应
    */
   formatResponse(result: {
     success: boolean;
