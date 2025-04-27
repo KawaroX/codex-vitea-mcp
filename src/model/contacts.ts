@@ -1,5 +1,6 @@
 import { type Collection, ObjectId, type Db } from "mongodb";
 import { Contact, ensureObjectId } from "./types.js";
+import { MemoryModel, EntityEvent } from "./memory.js";
 
 /**
  * 联系人数据操作类
@@ -11,6 +12,14 @@ export class ContactsModel {
   constructor(db: Db) {
     this.db = db;
     this.contactsCollection = db.collection<Contact>("contacts");
+  }
+
+  /**
+   * 获取所有联系人
+   * @returns 联系人数组
+   */
+  async getAllContacts(): Promise<Contact[]> {
+    return await this.contactsCollection.find({}).toArray();
   }
 
   /**
@@ -120,51 +129,6 @@ export class ContactsModel {
   }
 
   /**
-   * 添加联系人笔记
-   * @param contactId 联系人ID
-   * @param content 笔记内容
-   * @param tags 可选的标签数组
-   * @returns 操作结果
-   */
-  async addContactNote(
-    contactId: string | ObjectId,
-    content: string,
-    tags: string[] = []
-  ): Promise<{ success: boolean; error?: string }> {
-    try {
-      const id = ensureObjectId(contactId);
-
-      const note = {
-        content,
-        createdAt: new Date(),
-        tags,
-      };
-
-      const result = await this.contactsCollection.updateOne(
-        { _id: id },
-        {
-          $push: { notes: note },
-          $set: {
-            updatedAt: new Date(),
-            modifiedSinceSync: true,
-          },
-        }
-      );
-
-      if (result.matchedCount === 0) {
-        return { success: false, error: "未找到联系人" };
-      }
-
-      return { success: true };
-    } catch (error) {
-      return {
-        success: false,
-        error: `添加联系人笔记失败: ${error}`,
-      };
-    }
-  }
-
-  /**
    * 获取联系人的所有标签
    * @param contactId 联系人ID
    * @returns 标签列表
@@ -212,6 +176,12 @@ export class ContactsModel {
     try {
       const id = ensureObjectId(contactId);
 
+      // 获取原始联系人
+      const originalContact = await this.getContactById(id);
+      if (!originalContact) {
+        return { success: false, error: "未找到联系人" };
+      }
+
       // 删除不应该直接更新的字段
       const { _id, createdAt, notes, ...safeUpdateData } = updateData as any;
 
@@ -236,14 +206,107 @@ export class ContactsModel {
         new ObjectId(id.toString())
       );
 
-      return {
+      const updateResult = {
         success: true,
         contact: updatedContact || undefined,
       };
+
+      // 生成联系人更新事件用于更新 Memory
+      try {
+        const event = {
+          entityType: "contact",
+          entityId: id,
+          eventType: EntityEvent.UPDATED,
+          timestamp: new Date(),
+          details: {
+            previousContact: {
+              name: originalContact.name,
+              phone: originalContact.phone,
+              email: originalContact.email,
+            },
+            updatedFields: Object.keys(safeUpdateData),
+          },
+        };
+
+        // 发布事件
+        const memoryManager = new MemoryModel(this.db);
+        await memoryManager.processEntityEvent(event);
+      } catch (eventError) {
+        console.error("处理 Memory 事件失败:", eventError);
+        // 事件处理失败不影响主流程
+      }
+
+      return updateResult;
     } catch (error) {
       return {
         success: false,
         error: `更新联系人失败: ${error}`,
+      };
+    }
+  }
+
+  /**
+   * 添加联系人笔记
+   * @param contactId 联系人ID
+   * @param content 笔记内容
+   * @param tags 可选的标签数组
+   * @returns 操作结果
+   */
+  async addContactNote(
+    contactId: string | ObjectId,
+    content: string,
+    tags: string[] = []
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      const id = ensureObjectId(contactId);
+
+      const note = {
+        content,
+        createdAt: new Date(),
+        tags,
+      };
+
+      const result = await this.contactsCollection.updateOne(
+        { _id: id },
+        {
+          $push: { notes: note },
+          $set: {
+            updatedAt: new Date(),
+            modifiedSinceSync: true,
+          },
+        }
+      );
+
+      if (result.matchedCount === 0) {
+        return { success: false, error: "未找到联系人" };
+      }
+
+      // 生成笔记添加事件用于更新 Memory
+      try {
+        const event = {
+          entityType: "contact",
+          entityId: id,
+          eventType: EntityEvent.NOTE_ADDED,
+          timestamp: new Date(),
+          details: {
+            noteContent: content,
+            noteTags: tags,
+          },
+        };
+
+        // 发布事件
+        const memoryManager = new MemoryModel(this.db);
+        await memoryManager.processEntityEvent(event);
+      } catch (eventError) {
+        console.error("处理 Memory 事件失败:", eventError);
+        // 事件处理失败不影响主流程
+      }
+
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: `添加联系人笔记失败: ${error}`,
       };
     }
   }

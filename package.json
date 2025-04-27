@@ -1,6 +1,6 @@
 {
   "name": "codex-vitea-mcp",
-  "version": "0.1.4",
+  "version": "0.2.2",
   "description": "专为ViteaOS个人信息管理系统设计的MCP服务器",
   "private": false,
   "type": "module",
@@ -14,13 +14,14 @@
     "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', '755')\"",
     "prepare": "npm run build",
     "watch": "tsc --watch",
-    "start": "node build/index.js",
-    "dev": "npm run build && npm run start",
+    "dev": "npm run build && node -r dotenv/config build/index.js",
+    "start": "node -r dotenv/config build/index.js",
     "inspector": "npx @modelcontextprotocol/inspector build/index.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.10.2",
     "@types/mongodb": "^4.0.6",
+    "dotenv": "^16.5.0",
     "mongodb": "^6.16.0",
     "zod": "^3.24.3"
   },

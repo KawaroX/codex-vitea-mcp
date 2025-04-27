@@ -1,6 +1,7 @@
 import { ObjectId, Db } from "mongodb";
 import { NotesModel } from "../model/notes.js";
 import { StructuredNote } from "../model/types.js";
+import { MemoryModel, EntityEvent } from "../model/memory.js";
 
 /**
  * 结构化笔记添加工具
@@ -153,6 +154,27 @@ export class AddStructuredNoteTool {
           success: false,
           error: result.error,
         };
+      }
+
+      // 生成笔记添加事件用于更新 Memory
+      try {
+        const event = {
+          entityType: entityType,
+          entityId: new ObjectId(resolvedEntityId!),
+          eventType: EntityEvent.NOTE_ADDED,
+          timestamp: new Date(),
+          details: {
+            noteContent: content,
+            noteTags: tags,
+          },
+        };
+
+        // 发布事件
+        const memoryManager = new MemoryModel(this.notesModel["db"]);
+        await memoryManager.processEntityEvent(event);
+      } catch (eventError) {
+        console.error("处理 Memory 事件失败:", eventError);
+        // 事件处理失败不影响主流程
       }
 
       // 构建成功消息

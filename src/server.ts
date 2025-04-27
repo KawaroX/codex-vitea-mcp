@@ -21,8 +21,10 @@ import {
   handleGetPromptRequest,
 } from "./schemas/prompts.js";
 import { handleCallToolRequest } from "./schemas/call.js";
+import { handleCallToolRequestWithMemory } from "./schemas/call.js";
 import { handleListResourceTemplatesRequest } from "./schemas/templates.js";
 import { handleCompletionRequest } from "./schemas/completion.js";
+import { SchedulerManager } from "./utils/scheduler.js";
 import type { Db, MongoClient } from "mongodb";
 
 /**
@@ -33,12 +35,31 @@ export function createServer(
   client: MongoClient,
   db: Db,
   isReadOnlyMode = false,
-  options = {}
+  options = {
+    useMemory: false,
+  }
 ) {
+  // 是否启用 Memory 系统
+  const useMemory = options.useMemory === true;
+
+  // 创建定时任务管理器
+  let schedulerManager: SchedulerManager | null = null;
+  if (useMemory) {
+    schedulerManager = new SchedulerManager(db);
+    schedulerManager.startSchedulers();
+
+    // 注册进程退出事件来清理
+    process.on("beforeExit", () => {
+      if (schedulerManager) {
+        schedulerManager.stopSchedulers();
+      }
+    });
+  }
+
   const server = new Server(
     {
       name: "codex-vitea-mcp",
-      version: "0.1.0",
+      version: "0.2.2",
       ...options,
     },
     {
@@ -55,7 +76,7 @@ export function createServer(
    * Ping请求处理器，用于检查服务器健康状况
    */
   server.setRequestHandler(PingRequestSchema, (request) =>
-    handlePingRequest({ request, client, db, isReadOnlyMode })
+    handlePingRequest({ request, client, db, isReadOnlyMode, useMemory })
   );
 
   /**
@@ -76,15 +97,40 @@ export function createServer(
    * 列出可用工具的处理器
    */
   server.setRequestHandler(ListToolsRequestSchema, (request) =>
-    handleListToolsRequest({ request, client, db, isReadOnlyMode })
+    handleListToolsRequest({
+      request,
+      client,
+      db,
+      isReadOnlyMode,
+      useMemory,
+    })
   );
 
   /**
    * MongoDB工具的处理器
    */
   server.setRequestHandler(CallToolRequestSchema, (request) =>
-    handleCallToolRequest({ request, client, db, isReadOnlyMode })
+    useMemory
+      ? handleCallToolRequestWithMemory({
+          request,
+          client,
+          db,
+          isReadOnlyMode,
+          schedulerManager: schedulerManager || null,
+        })
+      : handleCallToolRequest({
+          request,
+          client,
+          db,
+          isReadOnlyMode,
+        })
   );
+
+  // 如果启用Memory系统，添加Memory状态工具
+  if (useMemory && schedulerManager) {
+    // 将Memory状态工具注册到工具列表中
+    // 这需要在schemas/tools.ts中添加相应的工具定义和处理函数
+  }
 
   /**
    * 列出可用提示的处理器

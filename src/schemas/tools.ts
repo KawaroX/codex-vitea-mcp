@@ -9,11 +9,13 @@ export async function handleListToolsRequest({
   client,
   db,
   isReadOnlyMode,
+  useMemory = false,
 }: {
   request: ListToolsRequest;
   client: MongoClient;
   db: Db;
   isReadOnlyMode: boolean;
+  useMemory?: boolean;
 }) {
   // 定义ViteaOS特有工具
   const viteaTools = [
@@ -560,6 +562,57 @@ export async function handleListToolsRequest({
         },
       } as any
     );
+  }
+
+  // 如果启用Memory系统，添加Memory相关工具
+  if (useMemory) {
+    // 使用类型断言处理 memory_status 工具
+    viteaTools.push({
+      name: "memory_status",
+      description: "获取Memory系统状态和统计信息",
+      inputSchema: {
+        type: "object",
+        properties: {
+          detailed: {
+            type: "boolean",
+            description: "是否返回详细信息",
+            default: false,
+          },
+        },
+        required: [],
+      } as any, // 使用类型断言
+    });
+
+    // 使用类型断言处理 memory_maintenance 工具
+    viteaTools.push({
+      name: "memory_maintenance",
+      description: "管理Memory系统",
+      inputSchema: {
+        type: "object",
+        properties: {
+          action: {
+            type: "string",
+            description: "维护操作",
+            enum: ["cleanup_expired", "cleanup_old", "verify", "invalidate"],
+          },
+          memoryId: {
+            type: "string",
+            description: "Memory ID（用于verify和invalidate操作）",
+          },
+          confidenceThreshold: {
+            type: "number",
+            description: "置信度阈值（用于cleanup_old操作）",
+            default: 0.5,
+          },
+          ageInDays: {
+            type: "number",
+            description: "天数阈值（用于cleanup_old操作）",
+            default: 30,
+          },
+        },
+        required: ["action"],
+      } as any, // 使用类型断言
+    });
   }
 
   // 添加便捷工具

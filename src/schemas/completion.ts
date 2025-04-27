@@ -102,6 +102,30 @@ async function handlePromptCompletion(
         return completeTaskStatuses(db, argument.value);
       }
       break;
+
+    case "memory_status":
+      if (argument.name === "detailed") {
+        return {
+          completion: {
+            values: ["true", "false"],
+            total: 2,
+            hasMore: false
+          }
+        };
+      }
+      break;
+
+    case "memory_maintenance":
+      if (argument.name === "action") {
+        return {
+          completion: {
+            values: ["cleanup_expired", "cleanup_old", "verify", "invalidate"],
+            total: 4,
+            hasMore: false
+          }
+        };
+      }
+      break;
   }
 
   return emptyCompletionResult();

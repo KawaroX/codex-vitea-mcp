@@ -1,88 +1,145 @@
 import { Db } from "mongodb";
 import { ItemsModel } from "../model/items.js";
+import { MemoryModel } from "../model/memory.js";
 import { StructuredItemLocationResponse } from "../model/types.js";
+import { categorizeItem, isImportantData } from "../utils/memoryUtils.js";
+import {
+  isToolMemoryEnabled,
+  isCategoryMemoryEnabled,
+  getConfidenceThreshold,
+} from "../config/memory-config.js";
 
-/**
- * 物品查找工具
- * 用于查找物品位置和容器信息
- */
 export class FindItemTool {
   private itemsModel: ItemsModel;
+  private memoryModel: MemoryModel;
 
   constructor(db: Db) {
     this.itemsModel = new ItemsModel(db);
+    this.memoryModel = new MemoryModel(db);
   }
 
-  /**
-   * 执行物品查找
-   * @param params 查询参数
-   * @returns 查找结果
-   */
-  async execute(params: { itemName: string; exactMatch?: boolean }): Promise<{
+  async execute(params: {
+    itemName: string;
+    exactMatch?: boolean;
+    skipMemory?: boolean;
+  }): Promise<{
     found: boolean;
     items?: StructuredItemLocationResponse[];
     message?: string;
+    itemId?: string;
+    itemIds?: string[];
+    fromMemory?: boolean;
   }> {
     try {
-      const { itemName, exactMatch = false } = params;
+      const { itemName, exactMatch, skipMemory} = params;
+      const normalizedName = itemName.toLowerCase().trim().normalize("NFKC");
 
-      // 验证参数
-      if (!itemName || typeof itemName !== "string") {
-        return {
-          found: false,
-          message: "必须提供有效的物品名称",
-        };
+      // 1. 检查参数有效性
+      if (!itemName?.trim()) {
+        return { found: false, message: "必须提供有效的物品名称" };
       }
 
-      // 查找物品
-      if (exactMatch) {
-        // 精确匹配模式
-        const itemInfo = await this.itemsModel.getItemLocation(itemName);
+      // 2. 记忆查询逻辑
+      if (!skipMemory && isToolMemoryEnabled("find_item")) {
+        // 检查物品类别
+        const category = categorizeItem(normalizedName);
 
-        if (itemInfo) {
-          return {
-            found: true,
-            items: [itemInfo],
-          };
+        // 如果该类别启用了记忆，则尝试查询记忆
+        if (isCategoryMemoryEnabled(category)) {
+          console.log("检查记忆:", normalizedName, `(类别: ${category})`);
+
+          // 使用配置的置信度阈值
+          const confidenceThreshold = getConfidenceThreshold("findMemory");
+
+          const memoryResult = await this.memoryModel.findMemory(
+            "find_item",
+            {
+              itemName: normalizedName,
+              exactMatch,
+              _queryTime: Date.now(),
+              _category: category, // 添加类别信息辅助匹配
+            },
+            confidenceThreshold
+          );
+
+          console.log("记忆查询结果:", memoryResult ? "命中" : "未命中");
+
+          if (memoryResult) {
+            return {
+              ...memoryResult.resultInfo.result,
+              fromMemory: true,
+            };
+          }
         } else {
-          return {
-            found: false,
-            message: `未找到名为"${itemName}"的物品`,
-          };
+          console.log(`跳过记忆查询: 物品类别 ${category} 不启用记忆`);
         }
-      } else {
-        // 模糊匹配模式
-        const items = await this.itemsModel.findItems(itemName);
+      }
 
+      // 3. 实际查询逻辑
+      let result;
+      if (exactMatch) {
+        const itemInfo = await this.itemsModel.getItemLocation(itemName);
+        result = itemInfo
+          ? {
+              found: true,
+              items: [itemInfo],
+              itemId: itemInfo.itemId,
+            }
+          : {
+              found: false,
+              message: `未找到名为"${itemName}"的物品`,
+            };
+      } else {
+        const items = await this.itemsModel.findItems(itemName);
         if (items.length === 0) {
-          return {
+          result = {
             found: false,
             message: `未找到与"${itemName}"相关的物品`,
           };
-        }
-
-        // 获取每个物品的位置信息
-        const itemLocations: StructuredItemLocationResponse[] = [];
-
-        for (const item of items) {
-          const locationInfo = await this.itemsModel.getItemLocation(item._id);
-          if (locationInfo) {
-            itemLocations.push(locationInfo);
-          }
-        }
-
-        if (itemLocations.length > 0) {
-          return {
-            found: true,
-            items: itemLocations,
-          };
         } else {
-          return {
-            found: false,
-            message: "找到了物品，但无法获取位置信息",
-          };
+          const locations = await Promise.all(
+            items.map((item) => this.itemsModel.getItemLocation(item._id))
+          );
+          const itemLocations = locations.filter(Boolean);
+
+          result =
+            itemLocations.length > 0
+              ? {
+                  found: true,
+                  items: itemLocations,
+                  itemIds: items.map((item) => item._id.toString()),
+                }
+              : {
+                  found: false,
+                  message: "找到了物品，但无法获取位置信息",
+                };
         }
       }
+
+      // 4. 存储新记忆
+      if (result.found && !skipMemory && isToolMemoryEnabled("find_item")) {
+        // 检查物品类别
+        const category = categorizeItem(normalizedName);
+
+        // 只为启用记忆的类别存储记忆
+        if (isCategoryMemoryEnabled(category)) {
+          console.log("存储记忆:", itemName, `(类别: ${category})`);
+          await this.memoryModel.storeMemory(
+            "find_item",
+            {
+              itemName: normalizedName,
+              exactMatch,
+              _queryTime: Date.now(),
+              _category: category, // 添加类别信息便于后续匹配
+            },
+            result
+          );
+        } else {
+          console.log(`跳过记忆存储: 物品类别 ${category} 不启用记忆`);
+        }
+      }
+
+      return result;
     } catch (error) {
       console.error("查找物品时出错:", error);
       return {
@@ -92,11 +149,6 @@ export class FindItemTool {
     }
   }
 
-  /**
-   * 格式化响应为易读文本
-   * @param result 查找结果
-   * @returns 易读格式的结果描述
-   */
   formatResponse(result: {
     found: boolean;
     items?: StructuredItemLocationResponse[];
@@ -107,77 +159,37 @@ export class FindItemTool {
     }
 
     if (result.items.length === 1) {
-      // 单个物品的详细描述
       const item = result.items[0];
       let response = `物品"${item.itemName}"`;
 
-      if (item.container) {
-        response += `在${item.container.name}里`;
-      }
-
+      if (item.container) response += `在${item.container.name}里`;
       if (item.location) {
-        if (item.container) {
-          response += `，${item.container.name}位于${item.location.name}`;
-        } else {
-          response += `位于${item.location.name}`;
-        }
-
-        if (item.location.address) {
+        response += item.container
+          ? `，${item.container.name}位于${item.location.name}`
+          : `位于${item.location.name}`;
+        if (item.location.address)
           response += `（地址：${item.location.address}）`;
-        }
-      } else if (!item.container) {
-        response += "，但未记录位置信息";
-      }
-
-      if (item.status) {
-        response += `，状态：${item.status}`;
-      }
-
-      if (item.lastUpdate) {
-        response += `\n最后更新：${item.lastUpdate}`;
-      }
-
-      if (item.notes && item.notes.length > 0) {
+      } else if (!item.container) response += "，但未记录位置信息";
+      if (item.status) response += `，状态：${item.status}`;
+      if (item.lastUpdate) response += `\n最后更新：${item.lastUpdate}`;
+      if (item.notes?.length > 0) {
         response += `\n备注：${item.notes[0]}`;
-
-        if (item.notes.length > 1) {
+        if (item.notes.length > 1)
           response += `\n还有${item.notes.length - 1}条备注...`;
-        }
       }
-
       return response;
     } else {
-      // 多个物品的列表
-      let response = `找到${result.items.length}个相关物品：\n`;
-
-      for (let i = 0; i < result.items.length; i++) {
-        const item = result.items[i];
-        response += `${i + 1}. ${item.itemName}`;
-
-        const locationParts = [];
-
-        if (item.container) {
-          locationParts.push(`在${item.container.name}里`);
-        }
-
-        if (item.location) {
-          locationParts.push(`位于${item.location.name}`);
-        }
-
-        if (locationParts.length > 0) {
-          response += `（${locationParts.join("，")}）`;
-        }
-
-        if (item.status) {
-          response += `，状态：${item.status}`;
-        }
-
-        if (i < result.items.length - 1) {
-          response += "\n";
-        }
-      }
-
-      return response;
+      return `找到${result.items.length}个相关物品：\n${result.items
+        .map((item, i) => {
+          let line = `${i + 1}. ${item.itemName}`;
+          const parts = [];
+          if (item.container) parts.push(`在${item.container.name}里`);
+          if (item.location) parts.push(`位于${item.location.name}`);
+          if (parts.length) line += `（${parts.join("，")}）`;
+          if (item.status) line += `，状态：${item.status}`;
+          return line;
+        })
+        .join("\n")}`;
     }
   }
 }

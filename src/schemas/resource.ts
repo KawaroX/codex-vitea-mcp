@@ -33,7 +33,7 @@ export async function handleReadResourceRequest({
   const url = new URL(request.params.uri);
   const path = url.pathname.replace(/^\//, "");
 
-  // ViteaOS特定资源处理
+  // CodexVitea特定资源处理
   if (url.protocol === "vitea:") {
     return await handleViteaResource(path, db);
   }
@@ -98,50 +98,42 @@ export async function handleListResourcesRequest({
   try {
     const collections = await db.listCollections().toArray();
 
-    // 基本MongoDB集合
-    const baseResources = collections.map((collection: CollectionInfo) => ({
-      uri: `mongodb:///${collection.name}`,
-      mimeType: "application/json",
-      name: collection.name,
-      description: getCollectionDescription(collection.name),
-    }));
-
-    // 添加ViteaOS特定资源
+    // CodexVitea特定资源
     const viteaResources = [
       {
         uri: "vitea://items/all",
         mimeType: "application/json",
-        name: "ViteaOS物品",
+        name: "CodexVitea_物品",
         description: "所有物品信息和位置",
       },
       {
         uri: "vitea://locations/all",
         mimeType: "application/json",
-        name: "ViteaOS位置",
+        name: "CodexVitea_位置",
         description: "所有位置信息和层次结构",
       },
       {
         uri: "vitea://contacts/all",
         mimeType: "application/json",
-        name: "ViteaOS联系人",
+        name: "Codex联系人",
         description: "所有联系人信息",
       },
       {
         uri: "vitea://biodata/all",
         mimeType: "application/json",
-        name: "ViteaOS生物数据",
+        name: "Codex生物数据",
         description: "所有生物数据测量记录",
       },
       {
         uri: "vitea://tasks/all",
         mimeType: "application/json",
-        name: "ViteaOS任务",
+        name: "CodexVitea_任务",
         description: "所有任务信息",
       },
     ];
 
     return {
-      resources: [...baseResources, ...viteaResources],
+      resources: viteaResources,
     };
   } catch (error) {
     if (error instanceof Error) {
@@ -152,7 +144,7 @@ export async function handleListResourcesRequest({
 }
 
 /**
- * 处理ViteaOS特定资源
+ * 处理CodexVitea特定资源
  */
 async function handleViteaResource(
   path: string,
@@ -186,7 +178,7 @@ async function handleViteaResource(
         content = await getTasksResource(db, resourceId);
         break;
       default:
-        throw new Error(`未知的ViteaOS资源类型: ${resourceType}`);
+        throw new Error(`未知的CodexVitea资源类型: ${resourceType}`);
     }
 
     return {
@@ -200,9 +192,9 @@ async function handleViteaResource(
     };
   } catch (error) {
     if (error instanceof Error) {
-      throw new Error(`读取ViteaOS资源失败: ${error.message}`);
+      throw new Error(`读取CodexVitea资源失败: ${error.message}`);
     }
-    throw new Error("读取ViteaOS资源失败: 未知错误");
+    throw new Error("读取CodexVitea资源失败: 未知错误");
   }
 }
 
@@ -215,7 +207,7 @@ async function getItemsResource(db: Db, resourceId: string): Promise<any> {
   if (resourceId === "all") {
     const items = await db.collection("items").find({}).limit(20).toArray();
     return {
-      resourceType: "ViteaOS物品",
+      resourceType: "CodexVitea_物品",
       count: items.length,
       items,
       schema: {
@@ -244,7 +236,7 @@ async function getItemsResource(db: Db, resourceId: string): Promise<any> {
     const locationInfo = await itemsModel.getItemLocation(item._id);
 
     return {
-      resourceType: "ViteaOS物品",
+      resourceType: "CodexVitea_物品",
       item,
       locationInfo,
     };
@@ -260,7 +252,7 @@ async function getLocationsResource(db: Db, resourceId: string): Promise<any> {
   if (resourceId === "all") {
     const locations = await db.collection("locations").find({}).toArray();
     return {
-      resourceType: "ViteaOS位置",
+      resourceType: "CodexVitea位置",
       count: locations.length,
       locations,
       schema: {
@@ -296,7 +288,7 @@ async function getLocationsResource(db: Db, resourceId: string): Promise<any> {
     const hierarchy = await locationsModel.getLocationHierarchy(location._id);
 
     return {
-      resourceType: "ViteaOS位置",
+      resourceType: "CodexVitea_位置",
       location,
       hierarchy,
     };
@@ -312,7 +304,7 @@ async function getContactsResource(db: Db, resourceId: string): Promise<any> {
   if (resourceId === "all") {
     const contacts = await db.collection("contacts").find({}).toArray();
     return {
-      resourceType: "ViteaOS联系人",
+      resourceType: "CodexVitea_联系人",
       count: contacts.length,
       contacts,
       schema: {
@@ -340,7 +332,7 @@ async function getContactsResource(db: Db, resourceId: string): Promise<any> {
     const notes = await contactsModel.getContactNotes(contact._id);
 
     return {
-      resourceType: "ViteaOS联系人",
+      resourceType: "CodexVitea_联系人",
       contact,
       notes,
     };
@@ -366,7 +358,7 @@ async function getBioDataResource(db: Db, resourceId: string): Promise<any> {
     }
 
     return {
-      resourceType: "ViteaOS生物数据",
+      resourceType: "CodexVitea_生物数据",
       measurementTypes: types,
       latestRecords,
       schema: {
@@ -390,7 +382,7 @@ async function getBioDataResource(db: Db, resourceId: string): Promise<any> {
     }
 
     return {
-      resourceType: "ViteaOS生物数据",
+      resourceType: "CodexVitea_生物数据",
       record,
     };
   } else {
@@ -399,7 +391,7 @@ async function getBioDataResource(db: Db, resourceId: string): Promise<any> {
     const stats = await bioDataModel.getMeasurementStats(resourceId);
 
     return {
-      resourceType: "ViteaOS生物数据",
+      resourceType: "CodexVitea_生物数据",
       measurementType: resourceId,
       records,
       stats,
@@ -416,7 +408,7 @@ async function getTasksResource(db: Db, resourceId: string): Promise<any> {
   if (resourceId === "all") {
     const tasks = await db.collection("tasks").find({}).limit(20).toArray();
     return {
-      resourceType: "ViteaOS任务",
+      resourceType: "CodexVitea_任务",
       count: tasks.length,
       tasks,
       schema: {
@@ -441,7 +433,7 @@ async function getTasksResource(db: Db, resourceId: string): Promise<any> {
     }
 
     return {
-      resourceType: "ViteaOS任务",
+      resourceType: "CodexVitea_任务",
       task,
     };
   } else if (["pending", "overdue", "upcoming"].includes(resourceId)) {
@@ -457,7 +449,7 @@ async function getTasksResource(db: Db, resourceId: string): Promise<any> {
     }
 
     return {
-      resourceType: "ViteaOS任务",
+      resourceType: "CodexVitea_任务",
       status: resourceId,
       count: tasks.length,
       tasks,
@@ -467,7 +459,7 @@ async function getTasksResource(db: Db, resourceId: string): Promise<any> {
     const tasks = await tasksModel.getTasksByType(resourceId);
 
     return {
-      resourceType: "ViteaOS任务",
+      resourceType: "CodexVitea_任务",
       taskType: resourceId,
       count: tasks.length,
       tasks,

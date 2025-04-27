@@ -1,4 +1,5 @@
-#!/usr/bin/env node
+import 'dotenv/config';
+
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { connectToMongoDB } from "./mongo.js";
 import { createServer } from "./server.js";
@@ -7,22 +8,27 @@ import { printWelcomeBanner } from "./utils/banner.js";
 
 // 声明一个全局作用域的客户端变量用于清理处理
 let mongoClient: MongoClient | null = null;
+// let serverInfo: { server: any; cleanup: () => void } | null = null;
 
 /**
  * 使用stdio传输启动服务器并初始化MongoDB连接
  */
+// 修改 index.ts 文件中的 main 函数
 async function main() {
-  // printWelcomeBanner();
+  printWelcomeBanner();
 
   const args = process.argv.slice(2);
   // 默认使用环境变量
-  let connectionUrl = "";
+  let connectionUrl = process.env.MCP_MONGODB_URI || "";
   let readOnlyMode = process.env.MCP_MONGODB_READONLY === "true" || false;
+  let useMemory = process.env.VITEA_USE_MEMORY === "true" || false;
 
   // 解析命令行参数（这些优先）
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--read-only" || args[i] === "-r") {
       readOnlyMode = true;
+    } else if (args[i] === "--use-memory" || args[i] === "-m") {
+      useMemory = true;
     } else if (!connectionUrl) {
       connectionUrl = args[i];
     }
@@ -37,9 +43,11 @@ async function main() {
     console.error(
       "请通过命令行参数或MCP_MONGODB_URI环境变量提供MongoDB连接URL"
     );
-    console.error("用法: command <mongodb-url> [--read-only|-r]");
     console.error(
-      "   或: MCP_MONGODB_URI=<mongodb-url> [MCP_MONGODB_READONLY=true] command"
+      "用法: command <mongodb-url> [--read-only|-r] [--use-memory|-m]"
+    );
+    console.error(
+      "   或: MCP_MONGODB_URI=<mongodb-url> [MCP_MONGODB_READONLY=true] [VITEA_USE_MEMORY=true] command"
     );
     process.exit(1);
   }
@@ -71,12 +79,14 @@ async function main() {
 
     console.warn(`已连接到数据库: ${db.databaseName}`);
     console.warn(`读取模式: ${isReadOnlyMode ? "只读" : "读写"}`);
+    console.warn(`记忆系统: ${useMemory ? "启用" : "禁用"}`);
 
-    // 将db而非client传递给createServer
-    const server = createServer(client, db, isReadOnlyMode);
+    // 创建服务器
+    const server = createServer(client, db, isReadOnlyMode, {
+      useMemory,
+    });
 
     const transport = new StdioServerTransport();
-
     await server.connect(transport);
     console.warn("ViteaOS MCP服务器已成功连接");
   } catch (error) {
@@ -88,7 +98,7 @@ async function main() {
   }
 }
 
-// 处理清理
+// 清理处理代码保持原样，不使用 serverInfo
 process.on("SIGINT", async () => {
   if (mongoClient) {
     await mongoClient.close();

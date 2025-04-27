@@ -1,23 +1,27 @@
 import type { CallToolRequest } from "@modelcontextprotocol/sdk/types.js";
 import { ObjectId, type Db, type MongoClient } from "mongodb";
 
-import { CreateItemTool } from "../tools/createItem.js";
-import { DeleteItemTool } from "../tools/deleteItem.js";
 import { FindItemTool } from "../tools/findItem.js";
 import { EstimateTimeTool } from "../tools/estimateTime.js";
 import { TransferItemTool } from "../tools/transferItem.js";
 import { UpdateTaskStatusTool } from "../tools/updateTaskStatus.js";
 import { AddStructuredNoteTool } from "../tools/addStructuredNote.js";
 import { SearchNotesTool } from "../tools/searchNotes.js";
+import { MemoryStatusTool } from "../tools/memoryStatus.js";
+import { MemoryMaintenanceTool } from "../tools/memoryMaintenance.js";
 
 import { ItemsModel } from "../model/items.js";
 import { LocationsModel } from "../model/locations.js";
 import { ContactsModel } from "../model/contacts.js";
 import { BioDataModel } from "../model/bioData.js";
 import { TasksModel } from "../model/tasks.js";
-import { contextManager } from "../utils/ContextManager.js";
-import { memoryManager } from "../model/memory.js";
-import { analyzeQuery } from "../utils/memoryUtils.js";
+import { MemoryModel } from "../model/memory.js";
+import {
+  calculateExpiryTime,
+  calculateInitialConfidence,
+  calculateStorageTier,
+  isImportantData,
+} from "../utils/memoryUtils.js";
 
 import { SchedulerManager } from "../utils/scheduler.js";
 
@@ -28,28 +32,22 @@ import {
 
 // MongoDB 标准操作类型
 type MongoOperation =
-  // 物品操作
-  | "create_item" // 创建物品
-  | "delete_item" // 删除物品
-  | "query_item" // 查询物品
   | "find_item" // 查找物品
-  | "search_notes" // 搜索物品
-  | "update_item" // 更新物品位置或状态
-  | "transfer_item" // 转移物品
-  // 地图操作
   | "estimate_time" // 估算出行时间
+  | "update_item" // 更新物品位置或状态
+  | "query_item" // 查询物品
   | "query_location" // 查询位置
-  // 联系人操作
   | "query_contact" // 查询联系人
-  // 生物数据操作
   | "query_biodata" // 查询生物数据
-  | "get_latest_biodata" // 获取最新生物数据
-  // 任务操作
   | "query_task" // 查询任务
+  | "get_latest_biodata" // 获取最新生物数据
   | "get_pending_tasks" // 获取待办任务
+  | "transfer_item" // 转移物品
   | "update_task_status" // 更新任务状态
-  // 其他
-  | "add_structured_note"; // 添加结构化笔记
+  | "add_structured_note" // 添加结构化笔记
+  | "search_notes" // 搜索笔记
+  | "memory_status" // Memory系统状态
+  | "memory_maintenance"; // Memory系统维护
 
 // 不允许在只读模式下执行的操作
 const WRITE_OPERATIONS = ["update_item", "transfer_item"];
@@ -86,10 +84,6 @@ async function handleCallToolRequest({
   // 根据操作名称路由到相应的处理器
   try {
     switch (operation) {
-      case "create_item":
-        return await handleCreateItem(db, args);
-      case "delete_item":
-        return await handleDeleteItem(db, args);
       case "find_item":
         return await handleFindItem(db, args);
       case "estimate_time":
@@ -195,92 +189,6 @@ async function handleEstimateTime(db: Db, args: Record<string, unknown>) {
     message: formattedResponse,
     estimation: result.estimation,
     rawResult: result,
-  });
-}
-
-/**
- * 处理创建物品
- * @param db 数据库实例
- * @param args 参数
- * @returns 创建结果
- */
-async function handleCreateItem(db: Db, args: Record<string, unknown>) {
-  const createItemTool = new CreateItemTool(db);
-
-  // 验证参数
-  if (!args.name) {
-    throw new Error("创建物品需要提供名称");
-  }
-
-  // 解析参数
-  const params = {
-    name: args.name as string,
-    category: args.category as string,
-    status: args.status as string,
-    quantity: args.quantity as number,
-    isContainer: args.isContainer as boolean,
-    locationId: args.locationId as string,
-    locationName: args.locationName as string,
-    containerId: args.containerId as string,
-    containerName: args.containerName as string,
-    note: args.note as string,
-  };
-
-  // 执行创建
-  const result = await createItemTool.execute(params);
-
-  // 格式化响应
-  if (!result.success) {
-    return formatResponse({
-      success: false,
-      message: result.message || result.error || "创建物品失败",
-      error: result.error,
-    });
-  }
-
-  return formatResponse({
-    success: true,
-    message: result.message,
-    item: result.item,
-  });
-}
-
-/**
- * 处理删除物品
- * @param db 数据库实例
- * @param args 参数
- * @returns 删除结果
- */
-async function handleDeleteItem(db: Db, args: Record<string, unknown>) {
-  const deleteItemTool = new DeleteItemTool(db);
-
-  // 验证参数
-  if (!args.itemId && !args.itemName) {
-    throw new Error("删除物品需要提供物品ID或名称");
-  }
-
-  // 解析参数
-  const params = {
-    itemId: args.itemId as string,
-    itemName: args.itemName as string,
-    isSoftDelete: (args.isSoftDelete as boolean) ?? true,
-  };
-
-  // 执行删除
-  const result = await deleteItemTool.execute(params);
-
-  // 格式化响应
-  if (!result.success) {
-    return formatResponse({
-      success: false,
-      message: result.message || result.error || "删除物品失败",
-      error: result.error,
-    });
-  }
-
-  return formatResponse({
-    success: true,
-    message: result.message,
   });
 }
 
@@ -960,200 +868,132 @@ async function handleCallToolRequestWithMemory({
   client,
   db,
   isReadOnlyMode,
-  contextId = null, // 可以从Claude传入上下文ID
   schedulerManager = null,
 }: {
   request: CallToolRequest;
   client: MongoClient;
   db: Db;
   isReadOnlyMode: boolean;
-  contextId?: string | null;
   schedulerManager?: SchedulerManager | null;
 }) {
   const { name, arguments: args = {} } = request.params;
-  
-  // 1. 获取或创建上下文
-  if (!contextId) {
-    contextId = contextManager.createContext();
+
+  console.warn(`使用 Memory 系统处理工具调用: ${name}`);
+
+  // 检查工具是否启用记忆
+  if (!isToolMemoryEnabled(name)) {
+    console.warn(`记忆系统已禁用工具 ${name}，执行直接调用`);
+    return await handleCallToolRequest({
+      request,
+      client,
+      db,
+      isReadOnlyMode,
+    });
   }
-  
-  // 2. 分析查询复杂度
-  const analysis = analyzeQuery(name, args);
-  
-  console.log(`工具 ${name} 的复杂度评分: ${analysis.complexityScore}`);
-  
-  // 3. 创建或获取Memory管理器
-  const memory = memoryManager(db);
-  
-  // 4. 判断是否使用记忆 - 只对中高复杂度查询使用记忆
-  let resultFromMemory = null;
-  
-  if (analysis.complexityScore >= 3 && analysis.shouldCache) {
-    try {
-      // 尝试从记忆中查找
-      resultFromMemory = await memory.findMemory(name, args, {
-        confidenceThreshold: 0.7,
-        contextId: contextId
-      });
-      
-      if (resultFromMemory) {
-        console.log(`从记忆中获取结果: ${resultFromMemory._id}`);
-        
-        // 记录到上下文
-        contextManager.addQueryStep(
-          contextId,
-          name,
-          args,
-          resultFromMemory.result.data
-        );
-        
-        // 添加记忆信息到结果
-        const resultData = resultFromMemory.result.data;
-        resultData._fromMemory = true;
-        resultData._memoryId = resultFromMemory._id.toString();
-        resultData._confidence = resultFromMemory.result.confidence;
-        
-        return formatResponse(resultData);
-      }
-    } catch (error) {
-      console.error(`从记忆获取结果时出错: ${error}`);
-      // 错误不中断流程，继续正常调用
+
+  // 创建 Memory 管理器
+  const memoryModel = new MemoryModel(db);
+
+  // 1. 检查是否有匹配的缓存
+  const confidenceThreshold = getConfidenceThreshold("findMemory");
+  const cachedMemory = await memoryModel.findMemory(
+    name,
+    args,
+    confidenceThreshold
+  );
+
+  // 2. 如果有高置信度的缓存，直接使用
+  const highConfidenceThreshold = getConfidenceThreshold("highConfidence");
+  if (
+    cachedMemory &&
+    cachedMemory.resultInfo.confidence >= highConfidenceThreshold &&
+    (!cachedMemory.classification.expiresAt ||
+      cachedMemory.classification.expiresAt > new Date())
+  ) {
+    // 更新访问信息
+    await memoryModel.updateAccessInfo(cachedMemory._id);
+
+    console.warn(
+      `找到匹配的 Memory 缓存，ID: ${cachedMemory._id}, 置信度: ${cachedMemory.resultInfo.confidence}`
+    );
+
+    // 添加 Memory 信息到响应
+    const result = cachedMemory.resultInfo.result;
+
+    // 标记为缓存结果
+    if (typeof result === "object" && result !== null) {
+      result._fromMemory = true;
+      result._memoryId = cachedMemory._id.toString();
+      result._confidence = cachedMemory.resultInfo.confidence;
+      result._cachedAt = cachedMemory.resultInfo.timestamp;
+      result._tier = cachedMemory.classification.tier;
     }
+
+    return formatResponse(result);
   }
-  
-  // 5. 执行实际工具调用
-  console.log(`执行工具调用: ${name}`);
+
+  // 3. 如果没有缓存或置信度不够，执行实际调用
+  console.warn(`未找到匹配的缓存或置信度不足，执行实际调用`);
+
+  // 调用原始处理函数处理工具请求
   const response = await handleCallToolRequest({
     request,
     client,
     db,
     isReadOnlyMode,
   });
-  
-  try {
-    // 从响应中提取结果
-    const resultData = JSON.parse(response.content[0].text);
-    
-    // 6. 记录查询步骤到上下文
-    contextManager.addQueryStep(contextId, name, args, resultData);
-    
-    // 7. 判断是否存储记忆
-    if (analysis.complexityScore >= 3 && analysis.shouldCache) {
-      try {
-        // 检查是否有实体依赖
-        const dependencies: any[] = [];
-        
-        // 调用特定方法提取依赖 - 这里需要实现
-        extractEntityDependencies(name, args, resultData, dependencies);
-        
-        // 存储记忆
-        const storedMemory = await memory.storeMemory(name, args, resultData, {
-          contextId,
-          dependencies
-        });
-        
-        if (storedMemory) {
-          console.log(`存储记忆: ${storedMemory._id}`);
-          resultData._memoryId = storedMemory._id.toString();
-          resultData._newlyStored = true;
-        }
-      } catch (error) {
-        console.error(`存储记忆时出错: ${error}`);
-      }
-    }
-    
-    // 8. 检查上下文是否应该创建复合记忆
-    if (contextManager.isCompoundQuery(contextId)) {
-      try {
-        const context = contextManager.getContext(contextId);
-        
-        if (context && context.steps.length >= 3) {
-          // 提取所有步骤
-          const steps = context.steps.map(step => ({
-            toolName: step.toolName,
-            params: step.params,
-            result: step.result
-          }));
-          
-          // 创建复合记忆
-          const compoundMemory = await memory.storeCompoundMemory(
-            contextId,
-            steps
-          );
-          
-          if (compoundMemory) {
-            console.log(`创建复合记忆: ${compoundMemory._id}`);
-          }
-        }
-      } catch (error) {
-        console.error(`创建复合记忆时出错: ${error}`);
-      }
-    }
-    
-    // 重新格式化响应
-    return formatResponse(resultData);
-  } catch (error) {
-    console.error(`处理响应结果时出错: ${error}`);
-    // 发生错误时返回原始响应
-    return response;
-  }
-}
 
-/**
- * 从查询和结果中提取实体依赖
- */
-function extractEntityDependencies(
-  toolName: string,
-  params: any,
-  result: any,
-  dependencies: any[]
-) {
-  // 这个函数需要根据不同工具类型实现详细的依赖提取逻辑
-  // 示例：
-  switch (toolName) {
-    case "find_item":
-      if (result.itemId) {
-        dependencies.push({
-          entityType: "item",
-          entityId: result.itemId,
-          relationship: "primary"
-        });
+  try {
+    // 4. 从响应中提取实际结果对象
+    const resultData = JSON.parse(response.content[0].text);
+
+    // 5. 判断是否适合缓存
+    const shouldCache =
+      // 不缓存修改操作
+      !name.startsWith("update_") &&
+      !name.startsWith("delete_") &&
+      !name.startsWith("transfer_") &&
+      !name.startsWith("add_") &&
+      // 检查是否为重要数据
+      !isImportantData(name, args) &&
+      // 检查结果是否有效
+      typeof resultData === "object" &&
+      resultData !== null;
+
+    if (shouldCache) {
+      try {
+        console.warn(`存储结果到 Memory 缓存`);
+
+        // 6. 根据查询类型决定存储层级和有效期
+        const tier = calculateStorageTier(name, args);
+        const initialConfidence = calculateInitialConfidence(name, args);
+        const expiresAt = calculateExpiryTime(tier, name, args);
+
+        console.warn(
+          `存储层级: ${tier}, 初始置信度: ${initialConfidence}, 过期时间: ${expiresAt}`
+        );
+
+        const memory = await memoryModel.storeMemory(name, args, resultData);
+
+        // 添加 Memory ID 到结果
+        resultData._memoryId = memory._id.toString();
+        resultData._newlyStored = true;
+
+        // 重新格式化响应
+        return formatResponse(resultData);
+      } catch (error) {
+        console.error(`存储 Memory 失败:`, error);
       }
-      if (result.items && Array.isArray(result.items)) {
-        result.items.forEach((item: any) => {
-          if (item.itemId) {
-            dependencies.push({
-              entityType: "item",
-              entityId: item.itemId,
-              relationship: "primary"
-            });
-          }
-        });
-      }
-      break;
-      
-    case "estimate_time":
-      if (result.estimation) {
-        if (result.estimation.origin && result.estimation.origin.id) {
-          dependencies.push({
-            entityType: "location",
-            entityId: result.estimation.origin.id,
-            relationship: "primary"
-          });
-        }
-        
-        if (result.estimation.destination && result.estimation.destination.id) {
-          dependencies.push({
-            entityType: "location",
-            entityId: result.estimation.destination.id,
-            relationship: "primary"
-          });
-        }
-      }
-      break;
-      
-    // 添加其他工具的依赖提取逻辑...
+    } else {
+      console.warn(`结果不适合缓存，跳过存储到 Memory`);
+    }
+  } catch (error) {
+    console.error(`处理响应结果失败:`, error);
+    // 如果处理失败，返回原始响应
   }
+
+  // 如果无法处理或不应缓存，返回原始响应
+  return response;
 }
 
 export { handleCallToolRequest, handleCallToolRequestWithMemory };
