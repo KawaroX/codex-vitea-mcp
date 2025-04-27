@@ -419,9 +419,462 @@ export async function handleListToolsRequest({
             { required: ["containerId", "containerItems"] },
           ],
         },
-      }
+      },
+      {
+        name: "update_item_info",
+        description: "更新物品基本信息",
+        inputSchema: {
+          type: "object",
+          properties: {
+            itemId: {
+              type: "string",
+              description: "物品ID",
+            },
+            itemName: {
+              type: "string",
+              description: "物品名称（如果未提供ID）",
+            },
+            newName: {
+              type: "string",
+              description: "新物品名称",
+            },
+            newCategory: {
+              type: "string",
+              description: "新物品类别",
+            },
+            newStatus: {
+              type: "string",
+              description: "新物品状态",
+            },
+            newQuantity: {
+              type: "integer",
+              description: "新物品数量",
+            },
+            note: {
+              type: "string",
+              description: "更新备注（可选）",
+            },
+          },
+          oneOf: [{ required: ["itemId"] }, { required: ["itemName"] }],
+          anyOf: [
+            { required: ["newName"] },
+            { required: ["newCategory"] },
+            { required: ["newStatus"] },
+            { required: ["newQuantity"] },
+          ],
+        },
+      } as any,
+      // 在viteaTools数组中添加联系人管理工具
+      {
+        name: "create_contact",
+        description: "创建新联系人",
+        inputSchema: {
+          type: "object",
+          properties: {
+            name: {
+              type: "string",
+              description: "联系人名称",
+            },
+            phone: {
+              type: "string",
+              description: "电话号码",
+            },
+            email: {
+              type: "string",
+              description: "电子邮件",
+            },
+            birthDate: {
+              type: "string",
+              description: "出生日期（格式：YYYY-MM-DD）",
+            },
+            hukou: {
+              type: "string",
+              description: "户籍所在地",
+            },
+            school: {
+              type: "string",
+              description: "学校或单位",
+            },
+            residence: {
+              type: "string",
+              description: "居住地",
+            },
+            detailedResidence: {
+              type: "string",
+              description: "详细居住地址",
+            },
+            workAddress: {
+              type: "string",
+              description: "工作地址",
+            },
+            socialMedia: {
+              type: "string",
+              description: "社交媒体账号",
+            },
+            avatar: {
+              type: "string",
+              description: "头像URL",
+            },
+            hobbies: {
+              type: "string",
+              description: "兴趣爱好",
+            },
+            relationship: {
+              type: "string",
+              description: "与联系人的关系类型",
+            },
+            tags: {
+              type: "array",
+              items: {
+                type: "string",
+              },
+              description: "标签数组",
+            },
+            note: {
+              type: "string",
+              description: "创建备注（可选）",
+            },
+          },
+          required: ["name"],
+        },
+      } as any,
+      {
+        name: "delete_contact",
+        description: "删除联系人",
+        inputSchema: {
+          type: "object",
+          properties: {
+            contactId: {
+              type: "string",
+              description: "联系人ID",
+            },
+            contactName: {
+              type: "string",
+              description: "联系人名称（如果未提供ID）",
+            },
+          },
+          oneOf: [{ required: ["contactId"] }, { required: ["contactName"] }],
+        },
+      } as any,
+      {
+        name: "update_contact_info",
+        description: "更新联系人信息",
+        inputSchema: {
+          type: "object",
+          properties: {
+            contactId: {
+              type: "string",
+              description: "联系人ID",
+            },
+            contactName: {
+              type: "string",
+              description: "联系人名称（如果未提供ID）",
+            },
+            newName: {
+              type: "string",
+              description: "新联系人名称",
+            },
+            newPhone: {
+              type: "string",
+              description: "新电话号码",
+            },
+            newEmail: {
+              type: "string",
+              description: "新电子邮件",
+            },
+            newBirthDate: {
+              type: "string",
+              description: "新出生日期（格式：YYYY-MM-DD）",
+            },
+            newHukou: {
+              type: "string",
+              description: "新户籍所在地",
+            },
+            newSchool: {
+              type: "string",
+              description: "新学校或单位",
+            },
+            newResidence: {
+              type: "string",
+              description: "新居住地",
+            },
+            newDetailedResidence: {
+              type: "string",
+              description: "新详细居住地址",
+            },
+            newWorkAddress: {
+              type: "string",
+              description: "新工作地址",
+            },
+            newSocialMedia: {
+              type: "string",
+              description: "新社交媒体账号",
+            },
+            newAvatar: {
+              type: "string",
+              description: "新头像URL",
+            },
+            newHobbies: {
+              type: "string",
+              description: "新兴趣爱好",
+            },
+            newRelationship: {
+              type: "string",
+              description: "新关系类型",
+            },
+            newTags: {
+              type: "array",
+              items: {
+                type: "string",
+              },
+              description: "新标签数组",
+            },
+            note: {
+              type: "string",
+              description: "更新备注（可选）",
+            },
+          },
+          oneOf: [{ required: ["contactId"] }, { required: ["contactName"] }],
+          anyOf: [
+            { required: ["newName"] },
+            { required: ["newPhone"] },
+            { required: ["newEmail"] },
+            { required: ["newBirthDate"] },
+            { required: ["newHukou"] },
+            { required: ["newSchool"] },
+            { required: ["newResidence"] },
+            { required: ["newDetailedResidence"] },
+            { required: ["newWorkAddress"] },
+            { required: ["newSocialMedia"] },
+            { required: ["newAvatar"] },
+            { required: ["newHobbies"] },
+            { required: ["newRelationship"] },
+            { required: ["newTags"] },
+          ],
+        },
+      } as any,
+      {
+        name: "create_location",
+        description: "创建新位置",
+        inputSchema: {
+          type: "object",
+          properties: {
+            name: {
+              type: "string",
+              description: "位置名称",
+            },
+            type: {
+              type: "string",
+              description: "位置类型",
+            },
+            address: {
+              type: "string",
+              description: "地址",
+            },
+            openingHours: {
+              type: "string",
+              description: "开放时间",
+            },
+            phone: {
+              type: "string",
+              description: "联系电话",
+            },
+            parentLocationId: {
+              type: "string",
+              description: "父位置ID",
+            },
+            parentLocationName: {
+              type: "string",
+              description: "父位置名称（如果未提供ID）",
+            },
+            coordinates: {
+              type: "object",
+              properties: {
+                latitude: {
+                  type: "number",
+                  description: "纬度",
+                },
+                longitude: {
+                  type: "number",
+                  description: "经度",
+                },
+              },
+              required: ["latitude", "longitude"],
+              description: "地理坐标",
+            },
+            notes: {
+              type: "string",
+              description: "备注",
+            },
+          },
+          required: ["name"],
+        },
+      } as any,
+      {
+        name: "update_location_info",
+        description: "更新位置信息",
+        inputSchema: {
+          type: "object",
+          properties: {
+            locationId: {
+              type: "string",
+              description: "位置ID",
+            },
+            locationName: {
+              type: "string",
+              description: "位置名称（如果未提供ID）",
+            },
+            newName: {
+              type: "string",
+              description: "新位置名称",
+            },
+            newType: {
+              type: "string",
+              description: "新位置类型",
+            },
+            newAddress: {
+              type: "string",
+              description: "新地址",
+            },
+            newOpeningHours: {
+              type: "string",
+              description: "新开放时间",
+            },
+            newPhone: {
+              type: "string",
+              description: "新联系电话",
+            },
+            newParentLocationId: {
+              type: "string",
+              description: "新父位置ID",
+            },
+            newParentLocationName: {
+              type: "string",
+              description: "新父位置名称（如果未提供ID）",
+            },
+            newCoordinates: {
+              type: "object",
+              properties: {
+                latitude: {
+                  type: "number",
+                  description: "纬度",
+                },
+                longitude: {
+                  type: "number",
+                  description: "经度",
+                },
+              },
+              required: ["latitude", "longitude"],
+              description: "新地理坐标",
+            },
+            newNotes: {
+              type: "string",
+              description: "新备注",
+            },
+          },
+          oneOf: [{ required: ["locationId"] }, { required: ["locationName"] }],
+          anyOf: [
+            { required: ["newName"] },
+            { required: ["newType"] },
+            { required: ["newAddress"] },
+            { required: ["newOpeningHours"] },
+            { required: ["newPhone"] },
+            { required: ["newParentLocationId"] },
+            { required: ["newParentLocationName"] },
+            { required: ["newCoordinates"] },
+            { required: ["newNotes"] },
+          ],
+        },
+      } as any,
+      {
+        name: "delete_location",
+        description: "删除位置",
+        inputSchema: {
+          type: "object",
+          properties: {
+            locationId: {
+              type: "string",
+              description: "位置ID",
+            },
+            locationName: {
+              type: "string",
+              description: "位置名称（如果未提供ID）",
+            },
+            force: {
+              type: "boolean",
+              description: "是否强制删除（即使有子位置或被物品引用）",
+              default: false,
+            },
+          },
+          oneOf: [{ required: ["locationId"] }, { required: ["locationName"] }],
+        },
+      } as any,
+      // 在viteaTools数组中添加生物数据管理工具
+      {
+        name: "create_biodata",
+        description: "创建新的生物数据测量记录",
+        inputSchema: {
+          type: "object",
+          properties: {
+            measurementType: {
+              type: "string",
+              description: "测量类型，如'走路速度'、'体重'等",
+            },
+            value: {
+              type: "number",
+              description: "测量值",
+            },
+            unit: {
+              type: "string",
+              description: "单位，如'米/分钟'、'千克'等",
+            },
+            recordName: {
+              type: "string",
+              description: "记录名称（可选，默认为'测量类型-当前日期'）",
+            },
+            context: {
+              type: "string",
+              description: "测量情境或说明",
+            },
+            notes: {
+              type: "string",
+              description: "备注",
+            },
+            measuredAt: {
+              type: "string",
+              description:
+                "测量时间（格式：YYYY-MM-DDTHH:mm:ss，默认为当前时间）",
+            },
+          },
+          required: ["measurementType", "value"],
+        },
+      } as any,
+      {
+        name: "delete_biodata",
+        description: "删除生物数据测量记录",
+        inputSchema: {
+          type: "object",
+          properties: {
+            recordId: {
+              type: "string",
+              description: "记录ID",
+            },
+            measurementType: {
+              type: "string",
+              description: "测量类型",
+            },
+            recordName: {
+              type: "string",
+              description: "记录名称",
+            },
+          },
+          oneOf: [
+            { required: ["recordId"] },
+            { required: ["measurementType", "recordName"] },
+          ],
+        },
+      } as any
     );
-
     viteaTools.push(
       {
         name: "transfer_item",
@@ -558,7 +1011,146 @@ export async function handleListToolsRequest({
           required: ["entityType", "content"],
           oneOf: [{ required: ["entityId"] }, { required: ["entityName"] }],
         },
-      } as any
+      } as any,
+      {
+        name: "create_task",
+        description: "创建新任务",
+        inputSchema: {
+          type: "object",
+          properties: {
+            name: {
+              type: "string",
+              description: "任务名称",
+            },
+            status: {
+              type: "string",
+              description: "任务状态（未开始、进行中、已完成、已取消等）",
+              default: "未开始",
+            },
+            dueDate: {
+              type: "string",
+              description: "截止日期（格式：YYYY-MM-DD）",
+            },
+            priority: {
+              type: "string",
+              description: "优先级（高、中、低等）",
+            },
+            taskType: {
+              type: "string",
+              description: "任务类型",
+            },
+            description: {
+              type: "string",
+              description: "任务描述",
+            },
+            workloadLevel: {
+              type: "string",
+              description: "工作量级别",
+            },
+            assignee: {
+              type: "string",
+              description: "负责人",
+            },
+            tags: {
+              type: "array",
+              items: {
+                type: "string",
+              },
+              description: "任务标签数组",
+            },
+            note: {
+              type: "string",
+              description: "创建备注（可选）",
+            },
+          },
+          required: ["name"],
+        },
+      } as any,
+      {
+        name: "delete_task",
+        description: "删除任务",
+        inputSchema: {
+          type: "object",
+          properties: {
+            taskId: {
+              type: "string",
+              description: "任务ID",
+            },
+            taskName: {
+              type: "string",
+              description: "任务名称（如果未提供ID）",
+            },
+          },
+          oneOf: [{ required: ["taskId"] }, { required: ["taskName"] }],
+        },
+      } as any,
+      {
+        name: "update_task_info",
+        description: "更新任务信息（不包括状态更新）",
+        inputSchema: {
+          type: "object",
+          properties: {
+            taskId: {
+              type: "string",
+              description: "任务ID",
+            },
+            taskName: {
+              type: "string",
+              description: "任务名称（如果未提供ID）",
+            },
+            newName: {
+              type: "string",
+              description: "新任务名称",
+            },
+            newDueDate: {
+              type: "string",
+              description: "新截止日期（格式：YYYY-MM-DD）",
+            },
+            newPriority: {
+              type: "string",
+              description: "新优先级",
+            },
+            newTaskType: {
+              type: "string",
+              description: "新任务类型",
+            },
+            newDescription: {
+              type: "string",
+              description: "新任务描述",
+            },
+            newWorkloadLevel: {
+              type: "string",
+              description: "新工作量级别",
+            },
+            newAssignee: {
+              type: "string",
+              description: "新负责人",
+            },
+            newTags: {
+              type: "array",
+              items: {
+                type: "string",
+              },
+              description: "新任务标签数组",
+            },
+            note: {
+              type: "string",
+              description: "更新备注（可选）",
+            },
+          },
+          oneOf: [{ required: ["taskId"] }, { required: ["taskName"] }],
+          anyOf: [
+            { required: ["newName"] },
+            { required: ["newDueDate"] },
+            { required: ["newPriority"] },
+            { required: ["newTaskType"] },
+            { required: ["newDescription"] },
+            { required: ["newWorkloadLevel"] },
+            { required: ["newAssignee"] },
+            { required: ["newTags"] },
+          ],
+        },
+      } as any,
     );
   }
 

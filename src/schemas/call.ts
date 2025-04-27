@@ -2,6 +2,7 @@ import type { CallToolRequest } from "@modelcontextprotocol/sdk/types.js";
 import type { Db, MongoClient } from "mongodb";
 
 import { CreateItemTool } from "../tools/createItem.js";
+import { UpdateItemInfoTool } from "../tools/updateItemInfo.js";
 import { DeleteItemTool } from "../tools/deleteItem.js";
 import { FindItemTool } from "../tools/findItem.js";
 import { EstimateTimeTool } from "../tools/estimateTime.js";
@@ -9,6 +10,17 @@ import { TransferItemTool } from "../tools/transferItem.js";
 import { UpdateTaskStatusTool } from "../tools/updateTaskStatus.js";
 import { AddStructuredNoteTool } from "../tools/addStructuredNote.js";
 import { SearchNotesTool } from "../tools/searchNotes.js";
+import { CreateContactTool } from "../tools/createContact.js";
+import { DeleteContactTool } from "../tools/deleteContact.js";
+import { UpdateContactInfoTool } from "../tools/updateContactInfo.js";
+import { CreateLocationTool } from "../tools/createLocation.js";
+import { UpdateLocationInfoTool } from "../tools/updateLocationInfo.js";
+import { DeleteLocationTool } from "../tools/deleteLocation.js";
+import { CreateBioDataTool } from "../tools/createBioData.js";
+import { DeleteBioDataTool } from "../tools/deleteBioData.js";
+import { CreateTaskTool } from "../tools/createTask.js";
+import { DeleteTaskTool } from "../tools/deleteTask.js";
+import { UpdateTaskInfoTool } from "../tools/updateTaskInfo.js";
 
 import { ItemsModel } from "../model/items.js";
 import { LocationsModel } from "../model/locations.js";
@@ -26,16 +38,28 @@ type MongoOperation =
   | "find_item" // 查找物品
   | "search_notes" // 搜索物品
   | "update_item" // 更新物品位置或状态
+  | "update_item_info" // 更新物品基本信息
   | "transfer_item" // 转移物品
-  // 地图操作
+  // 位置操作
   | "estimate_time" // 估算出行时间
+  | "create_location" // 创建位置
+  | "update_location_info" // 更新位置信息
+  | "delete_location" // 删除位置
   | "query_location" // 查询位置
   // 联系人操作
+  | "create_contact" // 创建联系人
+  | "delete_contact" // 删除联系人
+  | "update_contact_info" // 更新联系人信息
   | "query_contact" // 查询联系人
   // 生物数据操作
+  | "create_biodata" // 创建生物数据
+  | "delete_biodata" // 删除生物数据
   | "query_biodata" // 查询生物数据
   | "get_latest_biodata" // 获取最新生物数据
   // 任务操作
+  | "create_task" // 创建任务
+  | "delete_task" // 删除任务
+  | "update_task_info" // 更新任务信息
   | "query_task" // 查询任务
   | "get_pending_tasks" // 获取待办任务
   | "update_task_status" // 更新任务状态
@@ -43,7 +67,22 @@ type MongoOperation =
   | "add_structured_note"; // 添加结构化笔记
 
 // 不允许在只读模式下执行的操作
-const WRITE_OPERATIONS = ["update_item", "transfer_item"];
+const WRITE_OPERATIONS = [
+  "update_item",
+  "update_item_info",
+  "transfer_item",
+  "create_contact",
+  "delete_contact",
+  "update_contact_info",
+  "create_location",
+  "update_location_info",
+  "delete_location",
+  "create_biodata",
+  "delete_biodata",
+  "create_task",
+  "delete_task",
+  "update_task_info",
+];
 
 // ObjectId 转换模式
 type ObjectIdConversionMode = "auto" | "none" | "force";
@@ -85,12 +124,36 @@ export async function handleCallToolRequest({
         return await handleEstimateTime(db, args);
       case "update_item":
         return await handleUpdateItem(db, args);
+      case "update_item_info":
+        return await handleUpdateItemInfo(db, args);
       case "query_item":
         return await handleQueryItem(db, args);
       case "transfer_item":
         return await handleTransferItem(db, args);
       case "query_location":
         return await handleQueryLocation(db, args);
+      case "create_contact":
+        return await handleCreateContact(db, args);
+      case "delete_contact":
+        return await handleDeleteContact(db, args);
+      case "update_contact_info":
+        return await handleUpdateContactInfo(db, args);
+      case "create_location":
+        return await handleCreateLocation(db, args);
+      case "update_location_info":
+        return await handleUpdateLocationInfo(db, args);
+      case "delete_location":
+        return await handleDeleteLocation(db, args);
+      case "create_biodata":
+        return await handleCreateBioData(db, args);
+      case "delete_biodata":
+        return await handleDeleteBioData(db, args);
+      case "create_task":
+        return await handleCreateTask(db, args);
+      case "delete_task":
+        return await handleDeleteTask(db, args);
+      case "update_task_info":
+        return await handleUpdateTaskInfo(db, args);
       case "query_contact":
         return await handleQueryContact(db, args);
       case "query_biodata":
@@ -117,67 +180,61 @@ export async function handleCallToolRequest({
 }
 
 /**
- * 处理查找物品
+ * 处理更新物品基本信息
  * @param db 数据库实例
  * @param args 参数
- * @returns 查找结果
+ * @returns 更新结果
  */
-async function handleFindItem(db: Db, args: Record<string, unknown>) {
-  const findItemTool = new FindItemTool(db);
+async function handleUpdateItemInfo(db: Db, args: Record<string, unknown>) {
+  const updateItemInfoTool = new UpdateItemInfoTool(db);
 
+  const itemId = args.itemId as string;
   const itemName = args.itemName as string;
-  const exactMatch = (args.exactMatch as boolean) || false;
+  const newName = args.newName as string;
+  const newCategory = args.newCategory as string;
+  const newStatus = args.newStatus as string;
+  const newQuantity = args.newQuantity as number;
+  const note = args.note as string;
 
-  if (!itemName) {
-    throw new Error("物品查找需要提供物品名称");
+  if (!itemId && !itemName) {
+    throw new Error("更新物品信息需要提供物品ID或名称");
   }
 
-  const result = await findItemTool.execute({
-    itemName,
-    exactMatch,
-  });
-
-  // 格式化响应
-  const formattedResponse = findItemTool.formatResponse(result);
-
-  return formatResponse({
-    success: result.found,
-    message: formattedResponse,
-    items: result.items || [],
-    rawResult: result,
-  });
-}
-
-/**
- * 处理出行时间估算
- * @param db 数据库实例
- * @param args 参数
- * @returns 估算结果
- */
-async function handleEstimateTime(db: Db, args: Record<string, unknown>) {
-  const estimateTimeTool = new EstimateTimeTool(db);
-
-  const origin = args.origin as string;
-  const destination = args.destination as string;
-
-  if (!origin || !destination) {
-    throw new Error("时间估算需要提供起点和终点");
+  if (!newName && !newCategory && !newStatus && newQuantity === undefined) {
+    throw new Error("更新物品信息需要提供至少一个要更新的字段");
   }
 
-  const result = await estimateTimeTool.execute({
-    origin,
-    destination,
-  });
+  try {
+    const result = await updateItemInfoTool.execute({
+      itemId,
+      itemName,
+      newName,
+      newCategory,
+      newStatus,
+      newQuantity,
+      note,
+    });
 
-  // 格式化响应
-  const formattedResponse = estimateTimeTool.formatResponse(result);
+    if (!result.success) {
+      return formatResponse({
+        success: false,
+        message: result.error || "更新物品信息失败",
+        error: result.error,
+      });
+    }
 
-  return formatResponse({
-    success: result.success,
-    message: formattedResponse,
-    estimation: result.estimation,
-    rawResult: result,
-  });
+    return formatResponse({
+      success: true,
+      message: result.message,
+      item: result.item,
+    });
+  } catch (error) {
+    return formatResponse({
+      success: false,
+      message: `更新物品信息失败: ${error}`,
+      error: `${error}`,
+    });
+  }
 }
 
 /**
@@ -353,6 +410,610 @@ async function handleQueryItem(db: Db, args: Record<string, unknown>) {
   }
 
   throw new Error("查询物品需要提供有效的查询参数");
+}
+
+/**
+ * 处理查找物品
+ * @param db 数据库实例
+ * @param args 参数
+ * @returns 查找结果
+ */
+async function handleFindItem(db: Db, args: Record<string, unknown>) {
+  const findItemTool = new FindItemTool(db);
+
+  const itemName = args.itemName as string;
+  const exactMatch = (args.exactMatch as boolean) || false;
+
+  if (!itemName) {
+    throw new Error("物品查找需要提供物品名称");
+  }
+
+  const result = await findItemTool.execute({
+    itemName,
+    exactMatch,
+  });
+
+  // 格式化响应
+  const formattedResponse = findItemTool.formatResponse(result);
+
+  return formatResponse({
+    success: result.found,
+    message: formattedResponse,
+    items: result.items || [],
+    rawResult: result,
+  });
+}
+
+/**
+ * 处理出行时间估算
+ * @param db 数据库实例
+ * @param args 参数
+ * @returns 估算结果
+ */
+async function handleEstimateTime(db: Db, args: Record<string, unknown>) {
+  const estimateTimeTool = new EstimateTimeTool(db);
+
+  const origin = args.origin as string;
+  const destination = args.destination as string;
+
+  if (!origin || !destination) {
+    throw new Error("时间估算需要提供起点和终点");
+  }
+
+  const result = await estimateTimeTool.execute({
+    origin,
+    destination,
+  });
+
+  // 格式化响应
+  const formattedResponse = estimateTimeTool.formatResponse(result);
+
+  return formatResponse({
+    success: result.success,
+    message: formattedResponse,
+    estimation: result.estimation,
+    rawResult: result,
+  });
+}
+
+/**
+ * 处理创建联系人
+ * @param db 数据库实例
+ * @param args 参数
+ * @returns 创建结果
+ */
+async function handleCreateContact(db: Db, args: Record<string, unknown>) {
+  const createContactTool = new CreateContactTool(db);
+
+  // 验证基本参数
+  if (!args.name) {
+    throw new Error("创建联系人需要提供名称");
+  }
+
+  try {
+    const result = await createContactTool.execute({
+      name: args.name as string,
+      phone: args.phone as string,
+      email: args.email as string,
+      birthDate: args.birthDate as string,
+      hukou: args.hukou as string,
+      school: args.school as string,
+      residence: args.residence as string,
+      detailedResidence: args.detailedResidence as string,
+      workAddress: args.workAddress as string,
+      socialMedia: args.socialMedia as string,
+      avatar: args.avatar as string,
+      hobbies: args.hobbies as string,
+      relationship: args.relationship as string,
+      tags: args.tags as string[],
+      note: args.note as string,
+    });
+
+    if (!result.success) {
+      return formatResponse({
+        success: false,
+        message: result.message || result.error || "创建联系人失败",
+        error: result.error,
+      });
+    }
+
+    return formatResponse({
+      success: true,
+      message: result.message,
+      contact: result.contact,
+    });
+  } catch (error) {
+    return formatResponse({
+      success: false,
+      message: `创建联系人失败: ${error}`,
+      error: `${error}`,
+    });
+  }
+}
+
+/**
+ * 处理删除联系人
+ * @param db 数据库实例
+ * @param args 参数
+ * @returns 删除结果
+ */
+async function handleDeleteContact(db: Db, args: Record<string, unknown>) {
+  const deleteContactTool = new DeleteContactTool(db);
+
+  const contactId = args.contactId as string;
+  const contactName = args.contactName as string;
+
+  if (!contactId && !contactName) {
+    throw new Error("删除联系人需要提供联系人ID或名称");
+  }
+
+  try {
+    const result = await deleteContactTool.execute({
+      contactId,
+      contactName,
+    });
+
+    if (!result.success) {
+      return formatResponse({
+        success: false,
+        message: result.message || result.error || "删除联系人失败",
+        error: result.error,
+      });
+    }
+
+    return formatResponse({
+      success: true,
+      message: result.message,
+    });
+  } catch (error) {
+    return formatResponse({
+      success: false,
+      message: `删除联系人失败: ${error}`,
+      error: `${error}`,
+    });
+  }
+}
+
+/**
+ * 处理更新联系人信息
+ * @param db 数据库实例
+ * @param args 参数
+ * @returns 更新结果
+ */
+async function handleUpdateContactInfo(db: Db, args: Record<string, unknown>) {
+  const updateContactInfoTool = new UpdateContactInfoTool(db);
+
+  // 基本参数验证
+  if (!args.contactId && !args.contactName) {
+    throw new Error("更新联系人信息需要提供联系人ID或名称");
+  }
+
+  try {
+    const result = await updateContactInfoTool.execute({
+      contactId: args.contactId as string,
+      contactName: args.contactName as string,
+      newName: args.newName as string,
+      newPhone: args.newPhone as string,
+      newEmail: args.newEmail as string,
+      newBirthDate: args.newBirthDate as string,
+      newHukou: args.newHukou as string,
+      newSchool: args.newSchool as string,
+      newResidence: args.newResidence as string,
+      newDetailedResidence: args.newDetailedResidence as string,
+      newWorkAddress: args.newWorkAddress as string,
+      newSocialMedia: args.newSocialMedia as string,
+      newAvatar: args.newAvatar as string,
+      newHobbies: args.newHobbies as string,
+      newRelationship: args.newRelationship as string,
+      newTags: args.newTags as string[],
+      note: args.note as string,
+    });
+
+    if (!result.success) {
+      return formatResponse({
+        success: false,
+        message: result.message || result.error || "更新联系人信息失败",
+        error: result.error,
+      });
+    }
+
+    return formatResponse({
+      success: true,
+      message: result.message,
+      contact: result.contact,
+    });
+  } catch (error) {
+    return formatResponse({
+      success: false,
+      message: `更新联系人信息失败: ${error}`,
+      error: `${error}`,
+    });
+  }
+}
+
+/**
+ * 处理创建位置
+ * @param db 数据库实例
+ * @param args 参数
+ * @returns 创建结果
+ */
+async function handleCreateLocation(db: Db, args: Record<string, unknown>) {
+  const createLocationTool = new CreateLocationTool(db);
+
+  // 验证基本参数
+  if (!args.name) {
+    throw new Error("创建位置需要提供名称");
+  }
+
+  try {
+    const coordinates = args.coordinates as
+      | { latitude: number; longitude: number }
+      | undefined;
+
+    const result = await createLocationTool.execute({
+      name: args.name as string,
+      type: args.type as string,
+      address: args.address as string,
+      openingHours: args.openingHours as string,
+      phone: args.phone as string,
+      parentLocationId: args.parentLocationId as string,
+      parentLocationName: args.parentLocationName as string,
+      coordinates,
+      notes: args.notes as string,
+    });
+
+    if (!result.success) {
+      return formatResponse({
+        success: false,
+        message: result.message || result.error || "创建位置失败",
+        error: result.error,
+      });
+    }
+
+    return formatResponse({
+      success: true,
+      message: result.message,
+      location: result.location,
+    });
+  } catch (error) {
+    return formatResponse({
+      success: false,
+      message: `创建位置失败: ${error}`,
+      error: `${error}`,
+    });
+  }
+}
+
+/**
+ * 处理更新位置信息
+ * @param db 数据库实例
+ * @param args 参数
+ * @returns 更新结果
+ */
+async function handleUpdateLocationInfo(db: Db, args: Record<string, unknown>) {
+  const updateLocationInfoTool = new UpdateLocationInfoTool(db);
+
+  // 基本参数验证
+  if (!args.locationId && !args.locationName) {
+    throw new Error("更新位置信息需要提供位置ID或名称");
+  }
+
+  try {
+    const newCoordinates = args.newCoordinates as
+      | { latitude: number; longitude: number }
+      | undefined;
+
+    const result = await updateLocationInfoTool.execute({
+      locationId: args.locationId as string,
+      locationName: args.locationName as string,
+      newName: args.newName as string,
+      newType: args.newType as string,
+      newAddress: args.newAddress as string,
+      newOpeningHours: args.newOpeningHours as string,
+      newPhone: args.newPhone as string,
+      newParentLocationId: args.newParentLocationId as string,
+      newParentLocationName: args.newParentLocationName as string,
+      newCoordinates,
+      newNotes: args.newNotes as string,
+    });
+
+    if (!result.success) {
+      return formatResponse({
+        success: false,
+        message: result.message || result.error || "更新位置信息失败",
+        error: result.error,
+      });
+    }
+
+    return formatResponse({
+      success: true,
+      message: result.message,
+      location: result.location,
+    });
+  } catch (error) {
+    return formatResponse({
+      success: false,
+      message: `更新位置信息失败: ${error}`,
+      error: `${error}`,
+    });
+  }
+}
+
+/**
+ * 处理删除位置
+ * @param db 数据库实例
+ * @param args 参数
+ * @returns 删除结果
+ */
+async function handleDeleteLocation(db: Db, args: Record<string, unknown>) {
+  const deleteLocationTool = new DeleteLocationTool(db);
+
+  // 基本参数验证
+  if (!args.locationId && !args.locationName) {
+    throw new Error("删除位置需要提供位置ID或名称");
+  }
+
+  try {
+    const result = await deleteLocationTool.execute({
+      locationId: args.locationId as string,
+      locationName: args.locationName as string,
+      force: args.force as boolean,
+    });
+
+    if (!result.success) {
+      return formatResponse({
+        success: false,
+        message: result.message || result.error || "删除位置失败",
+        error: result.error,
+      });
+    }
+
+    return formatResponse({
+      success: true,
+      message: result.message,
+    });
+  } catch (error) {
+    return formatResponse({
+      success: false,
+      message: `删除位置失败: ${error}`,
+      error: `${error}`,
+    });
+  }
+}
+
+/**
+ * 处理创建生物数据
+ * @param db 数据库实例
+ * @param args 参数
+ * @returns 创建结果
+ */
+async function handleCreateBioData(db: Db, args: Record<string, unknown>) {
+  const createBioDataTool = new CreateBioDataTool(db);
+
+  // 验证基本参数
+  if (!args.measurementType) {
+    throw new Error("创建生物数据需要提供测量类型");
+  }
+
+  if (args.value === undefined || args.value === null) {
+    throw new Error("创建生物数据需要提供测量值");
+  }
+
+  try {
+    const result = await createBioDataTool.execute({
+      measurementType: args.measurementType as string,
+      value: args.value as number,
+      unit: args.unit as string,
+      recordName: args.recordName as string,
+      context: args.context as string,
+      notes: args.notes as string,
+      measuredAt: args.measuredAt as string,
+    });
+
+    if (!result.success) {
+      return formatResponse({
+        success: false,
+        message: result.message || result.error || "创建生物数据失败",
+        error: result.error,
+      });
+    }
+
+    return formatResponse({
+      success: true,
+      message: result.message,
+      record: result.record,
+    });
+  } catch (error) {
+    return formatResponse({
+      success: false,
+      message: `创建生物数据失败: ${error}`,
+      error: `${error}`,
+    });
+  }
+}
+
+/**
+ * 处理删除生物数据
+ * @param db 数据库实例
+ * @param args 参数
+ * @returns 删除结果
+ */
+async function handleDeleteBioData(db: Db, args: Record<string, unknown>) {
+  const deleteBioDataTool = new DeleteBioDataTool(db);
+
+  // 基本参数验证
+  if (!args.recordId && !(args.measurementType && args.recordName)) {
+    throw new Error("删除生物数据需要提供记录ID或(测量类型+记录名称)");
+  }
+
+  try {
+    const result = await deleteBioDataTool.execute({
+      recordId: args.recordId as string,
+      measurementType: args.measurementType as string,
+      recordName: args.recordName as string,
+    });
+
+    if (!result.success) {
+      return formatResponse({
+        success: false,
+        message: result.message || result.error || "删除生物数据失败",
+        error: result.error,
+      });
+    }
+
+    return formatResponse({
+      success: true,
+      message: result.message,
+    });
+  } catch (error) {
+    return formatResponse({
+      success: false,
+      message: `删除生物数据失败: ${error}`,
+      error: `${error}`,
+    });
+  }
+}
+
+/**
+ * 处理创建任务
+ * @param db 数据库实例
+ * @param args 参数
+ * @returns 创建结果
+ */
+async function handleCreateTask(db: Db, args: Record<string, unknown>) {
+  const createTaskTool = new CreateTaskTool(db);
+
+  // 验证基本参数
+  if (!args.name) {
+    throw new Error("创建任务需要提供名称");
+  }
+
+  try {
+    const result = await createTaskTool.execute({
+      name: args.name as string,
+      status: args.status as string,
+      dueDate: args.dueDate as string,
+      priority: args.priority as string,
+      taskType: args.taskType as string,
+      description: args.description as string,
+      workloadLevel: args.workloadLevel as string,
+      assignee: args.assignee as string,
+      tags: args.tags as string[],
+      note: args.note as string,
+    });
+
+    if (!result.success) {
+      return formatResponse({
+        success: false,
+        message: result.message || result.error || "创建任务失败",
+        error: result.error,
+      });
+    }
+
+    return formatResponse({
+      success: true,
+      message: result.message,
+      task: result.task,
+    });
+  } catch (error) {
+    return formatResponse({
+      success: false,
+      message: `创建任务失败: ${error}`,
+      error: `${error}`,
+    });
+  }
+}
+
+/**
+ * 处理删除任务
+ * @param db 数据库实例
+ * @param args 参数
+ * @returns 删除结果
+ */
+async function handleDeleteTask(db: Db, args: Record<string, unknown>) {
+  const deleteTaskTool = new DeleteTaskTool(db);
+
+  // 基本参数验证
+  if (!args.taskId && !args.taskName) {
+    throw new Error("删除任务需要提供任务ID或名称");
+  }
+
+  try {
+    const result = await deleteTaskTool.execute({
+      taskId: args.taskId as string,
+      taskName: args.taskName as string,
+    });
+
+    if (!result.success) {
+      return formatResponse({
+        success: false,
+        message: result.message || result.error || "删除任务失败",
+        error: result.error,
+      });
+    }
+
+    return formatResponse({
+      success: true,
+      message: result.message,
+    });
+  } catch (error) {
+    return formatResponse({
+      success: false,
+      message: `删除任务失败: ${error}`,
+      error: `${error}`,
+    });
+  }
+}
+
+/**
+ * 处理更新任务信息
+ * @param db 数据库实例
+ * @param args 参数
+ * @returns 更新结果
+ */
+async function handleUpdateTaskInfo(db: Db, args: Record<string, unknown>) {
+  const updateTaskInfoTool = new UpdateTaskInfoTool(db);
+
+  // 基本参数验证
+  if (!args.taskId && !args.taskName) {
+    throw new Error("更新任务信息需要提供任务ID或名称");
+  }
+
+  try {
+    const result = await updateTaskInfoTool.execute({
+      taskId: args.taskId as string,
+      taskName: args.taskName as string,
+      newName: args.newName as string,
+      newDueDate: args.newDueDate as string,
+      newPriority: args.newPriority as string,
+      newTaskType: args.newTaskType as string,
+      newDescription: args.newDescription as string,
+      newWorkloadLevel: args.newWorkloadLevel as string,
+      newAssignee: args.newAssignee as string,
+      newTags: args.newTags as string[],
+      note: args.note as string,
+    });
+
+    if (!result.success) {
+      return formatResponse({
+        success: false,
+        message: result.message || result.error || "更新任务信息失败",
+        error: result.error,
+      });
+    }
+
+    return formatResponse({
+      success: true,
+      message: result.message,
+      task: result.task,
+    });
+  } catch (error) {
+    return formatResponse({
+      success: false,
+      message: `更新任务信息失败: ${error}`,
+      error: `${error}`,
+    });
+  }
 }
 
 /**
