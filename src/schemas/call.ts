@@ -453,27 +453,42 @@ async function handleFindItem(db: Db, args: Record<string, unknown>) {
 async function handleEstimateTime(db: Db, args: Record<string, unknown>) {
   const estimateTimeTool = new EstimateTimeTool(db);
 
-  const origin = args.origin as string;
-  const destination = args.destination as string;
-
-  if (!origin || !destination) {
+  // 验证参数
+  if (!args.origin || !args.destination) {
     throw new Error("时间估算需要提供起点和终点");
   }
 
-  const result = await estimateTimeTool.execute({
-    origin,
-    destination,
-  });
+  try {
+    const result = await estimateTimeTool.execute({
+      origin: args.origin as string,
+      destination: args.destination as string,
+      contactName: args.contactName as string,
+      transportation: args.transportation as string,
+    });
 
-  // 格式化响应
-  const formattedResponse = estimateTimeTool.formatResponse(result);
+    if (!result.success) {
+      return formatResponse({
+        success: false,
+        message: result.message || "时间估算失败",
+      });
+    }
 
-  return formatResponse({
-    success: result.success,
-    message: formattedResponse,
-    estimation: result.estimation,
-    rawResult: result,
-  });
+    // 格式化响应
+    const formattedResponse = estimateTimeTool.formatResponse(result);
+
+    return formatResponse({
+      success: true,
+      message: formattedResponse,
+      estimation: result.estimation,
+      rawResult: result,
+    });
+  } catch (error) {
+    return formatResponse({
+      success: false,
+      message: `估算时间时出错: ${error}`,
+      error: `${error}`,
+    });
+  }
 }
 
 /**

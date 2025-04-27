@@ -1,4 +1,3 @@
-// src/tools/deleteItem.ts
 import { Db } from "mongodb";
 import { ItemsModel } from "../model/items.js";
 

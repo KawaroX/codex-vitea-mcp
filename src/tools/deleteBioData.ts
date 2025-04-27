@@ -1,4 +1,3 @@
-// src/tools/deleteBioData.ts
 import { ObjectId, Db } from "mongodb";
 import { BioDataModel } from "../model/bioData.js";
 

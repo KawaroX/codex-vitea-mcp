@@ -38,17 +38,30 @@ export async function handleListToolsRequest({
     },
     {
       name: "estimate_time",
-      description: "估算从一个地点到另一个地点的出行时间",
+      description:
+        "估算从一个地点到另一个地点的出行时间，结合个人行走速度和高德地图数据",
       inputSchema: {
         type: "object",
         properties: {
           origin: {
             type: "string",
-            description: "出发地名称或ID",
+            description: "起点名称或ID",
           },
           destination: {
             type: "string",
-            description: "目的地名称或ID",
+            description: "终点名称或ID",
+          },
+          contactName: {
+            type: "string",
+            description:
+              "联系人名称（如果目的地与联系人相关，如联系人的学校、家、公司等）",
+          },
+          transportation: {
+            type: "string",
+            description:
+              "交通方式: walking(步行), bicycling(骑行), driving(驾车), transit(公交)",
+            enum: ["walking", "bicycling", "driving", "transit"],
+            default: "walking",
           },
         },
         required: ["origin", "destination"],

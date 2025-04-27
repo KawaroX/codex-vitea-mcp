@@ -181,4 +181,5 @@ export interface TravelTimeEstimationResponse {
   baseSpeed?: number;
   speedUnit?: string;
   notes?: string;
+  route?: any;
 }
