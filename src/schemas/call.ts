@@ -1,14 +1,14 @@
 import type { CallToolRequest } from "@modelcontextprotocol/sdk/types.js";
 import { ObjectId, type Db, type MongoClient } from "mongodb";
 
-import { CreateItemTool } from "../tools/createItem.js";
-import { DeleteItemTool } from "../tools/deleteItem.js";
 import { FindItemTool } from "../tools/findItem.js";
 import { EstimateTimeTool } from "../tools/estimateTime.js";
 import { TransferItemTool } from "../tools/transferItem.js";
 import { UpdateTaskStatusTool } from "../tools/updateTaskStatus.js";
 import { AddStructuredNoteTool } from "../tools/addStructuredNote.js";
 import { SearchNotesTool } from "../tools/searchNotes.js";
+import { MemoryStatusTool } from "../tools/memoryStatus.js";
+import { MemoryMaintenanceTool } from "../tools/memoryMaintenance.js";
 
 import { ItemsModel } from "../model/items.js";
 import { LocationsModel } from "../model/locations.js";
@@ -28,28 +28,22 @@ import {
 
 // MongoDB 标准操作类型
 type MongoOperation =
-  // 物品操作
-  | "create_item" // 创建物品
-  | "delete_item" // 删除物品
-  | "query_item" // 查询物品
   | "find_item" // 查找物品
-  | "search_notes" // 搜索物品
-  | "update_item" // 更新物品位置或状态
-  | "transfer_item" // 转移物品
-  // 地图操作
   | "estimate_time" // 估算出行时间
+  | "update_item" // 更新物品位置或状态
+  | "query_item" // 查询物品
   | "query_location" // 查询位置
-  // 联系人操作
   | "query_contact" // 查询联系人
-  // 生物数据操作
   | "query_biodata" // 查询生物数据
-  | "get_latest_biodata" // 获取最新生物数据
-  // 任务操作
   | "query_task" // 查询任务
+  | "get_latest_biodata" // 获取最新生物数据
   | "get_pending_tasks" // 获取待办任务
+  | "transfer_item" // 转移物品
   | "update_task_status" // 更新任务状态
-  // 其他
-  | "add_structured_note"; // 添加结构化笔记
+  | "add_structured_note" // 添加结构化笔记
+  | "search_notes" // 搜索笔记
+  | "memory_status" // Memory系统状态
+  | "memory_maintenance"; // Memory系统维护
 
 // 不允许在只读模式下执行的操作
 const WRITE_OPERATIONS = ["update_item", "transfer_item"];
@@ -86,10 +80,6 @@ async function handleCallToolRequest({
   // 根据操作名称路由到相应的处理器
   try {
     switch (operation) {
-      case "create_item":
-        return await handleCreateItem(db, args);
-      case "delete_item":
-        return await handleDeleteItem(db, args);
       case "find_item":
         return await handleFindItem(db, args);
       case "estimate_time":
@@ -195,92 +185,6 @@ async function handleEstimateTime(db: Db, args: Record<string, unknown>) {
     message: formattedResponse,
     estimation: result.estimation,
     rawResult: result,
-  });
-}
-
-/**
- * 处理创建物品
- * @param db 数据库实例
- * @param args 参数
- * @returns 创建结果
- */
-async function handleCreateItem(db: Db, args: Record<string, unknown>) {
-  const createItemTool = new CreateItemTool(db);
-
-  // 验证参数
-  if (!args.name) {
-    throw new Error("创建物品需要提供名称");
-  }
-
-  // 解析参数
-  const params = {
-    name: args.name as string,
-    category: args.category as string,
-    status: args.status as string,
-    quantity: args.quantity as number,
-    isContainer: args.isContainer as boolean,
-    locationId: args.locationId as string,
-    locationName: args.locationName as string,
-    containerId: args.containerId as string,
-    containerName: args.containerName as string,
-    note: args.note as string,
-  };
-
-  // 执行创建
-  const result = await createItemTool.execute(params);
-
-  // 格式化响应
-  if (!result.success) {
-    return formatResponse({
-      success: false,
-      message: result.message || result.error || "创建物品失败",
-      error: result.error,
-    });
-  }
-
-  return formatResponse({
-    success: true,
-    message: result.message,
-    item: result.item,
-  });
-}
-
-/**
- * 处理删除物品
- * @param db 数据库实例
- * @param args 参数
- * @returns 删除结果
- */
-async function handleDeleteItem(db: Db, args: Record<string, unknown>) {
-  const deleteItemTool = new DeleteItemTool(db);
-
-  // 验证参数
-  if (!args.itemId && !args.itemName) {
-    throw new Error("删除物品需要提供物品ID或名称");
-  }
-
-  // 解析参数
-  const params = {
-    itemId: args.itemId as string,
-    itemName: args.itemName as string,
-    isSoftDelete: (args.isSoftDelete as boolean) ?? true,
-  };
-
-  // 执行删除
-  const result = await deleteItemTool.execute(params);
-
-  // 格式化响应
-  if (!result.success) {
-    return formatResponse({
-      success: false,
-      message: result.message || result.error || "删除物品失败",
-      error: result.error,
-    });
-  }
-
-  return formatResponse({
-    success: true,
-    message: result.message,
   });
 }
 
