@@ -1,8 +1,9 @@
+// src/tools/estimateTime.ts
 import { ObjectId, Db } from "mongodb";
 import { LocationsModel } from "../model/locations.js";
 import { ContactsModel } from "../model/contacts.js";
 import { BioDataModel } from "../model/bioData.js";
-import { TravelTimeEstimationResponse } from "../model/types.js";
+import { TravelTimeEstimationResponse, Location } from "../model/types.js";
 import axios from "axios";
 
 /**
@@ -14,11 +15,13 @@ export class EstimateTimeTool {
   private contactsModel: ContactsModel;
   private bioDataModel: BioDataModel;
   private amapKey: string;
+  private db: Db;
 
   constructor(db: Db) {
     this.locationsModel = new LocationsModel(db);
     this.contactsModel = new ContactsModel(db);
     this.bioDataModel = new BioDataModel(db);
+    this.db = db;
 
     // 从环境变量获取高德地图API密钥
     this.amapKey = process.env.AMAP_API_KEY || "";
@@ -35,8 +38,8 @@ export class EstimateTimeTool {
   async execute(params: {
     origin: string;
     destination: string;
-    contactName?: string; // 可选联系人姓名（如果目的地是联系人相关地点）
-    transportation?: string; // 交通方式: walking(步行), bicycling(骑行), driving(驾车), transit(公交)
+    contactName?: string;
+    transportation?: string;
   }): Promise<{
     success: boolean;
     estimation?: TravelTimeEstimationResponse;
@@ -59,8 +62,8 @@ export class EstimateTimeTool {
       }
 
       // 1. 解析起点和终点（可能是位置名称、位置ID、或关键词）
-      const originInfo = await this.resolveLocation(origin);
-      let destinationInfo = await this.resolveLocation(destination);
+      const originInfo = await this.resolveLocation(origin, true);
+      let destinationInfo = await this.resolveLocation(destination, true);
 
       // 2. 如果提供了联系人名称，检查目的地是否需要关联到联系人
       if (contactName && !destinationInfo.success) {
@@ -73,19 +76,48 @@ export class EstimateTimeTool {
         }
       }
 
-      // 3. 如果无法解析起点或终点，返回错误
+      // 3. 如果无法解析起点或终点，尝试使用高德地图地理编码API获取坐标
       if (!originInfo.success) {
-        return {
-          success: false,
-          message: `无法解析起点"${origin}"，请提供更准确的位置名称或ID`,
-        };
+        const geocodedOrigin = await this.geocodeLocation(origin);
+        if (geocodedOrigin.success) {
+          // 创建新位置并保存到数据库（异步，不等待完成）
+          this.saveLocationToDatabase(origin, geocodedOrigin.coordinates);
+          originInfo.success = true;
+          originInfo.location = {
+            name: origin,
+            _id: new ObjectId(), // 临时ID
+            coordinates: geocodedOrigin.coordinates,
+          };
+          originInfo.coordinates = geocodedOrigin.coordinates;
+        } else {
+          return {
+            success: false,
+            message: `无法解析起点"${origin}"的位置信息`,
+          };
+        }
       }
 
       if (!destinationInfo.success) {
-        return {
-          success: false,
-          message: `无法解析终点"${destination}"，请提供更准确的位置名称或ID`,
-        };
+        const geocodedDestination = await this.geocodeLocation(destination);
+        if (geocodedDestination.success) {
+          // 创建新位置并保存到数据库（异步，不等待完成）
+          this.saveLocationToDatabase(
+            destination,
+            geocodedDestination.coordinates
+          );
+          destinationInfo.success = true;
+          destinationInfo.location = {
+            name: destination,
+            _id: new ObjectId(), // 临时ID
+            coordinates: geocodedDestination.coordinates,
+          };
+          destinationInfo.coordinates = geocodedDestination.coordinates;
+        } else {
+          return {
+            success: false,
+            message: `无法解析终点"${destination}"的位置信息`,
+          };
+        }
       }
 
       // 4. 检查是否有室内路径计算需求（如主楼内的位置）
@@ -104,28 +136,27 @@ export class EstimateTimeTool {
       let distance = 0;
       let duration = 0;
 
-      if (
-        this.amapKey &&
-        originInfo.coordinates &&
-        destinationInfo.coordinates
-      ) {
-        // 检查坐标是否完整
-        if (
-          originInfo.coordinates.latitude != null &&
-          originInfo.coordinates.longitude != null &&
-          destinationInfo.coordinates.latitude != null &&
-          destinationInfo.coordinates.longitude != null
-        ) {
+      if (this.amapKey) {
+        // 如果有坐标信息，使用坐标进行路径规划
+        if (originInfo.coordinates && destinationInfo.coordinates) {
           routeResult = await this.callAmapRouteAPI(
             originInfo.coordinates,
             destinationInfo.coordinates,
             transportation
           );
+        }
+        // 否则使用地名直接进行路径规划（高德API支持地名）
+        else {
+          routeResult = await this.callAmapRouteAPIByName(
+            originInfo.location.name,
+            destinationInfo.location.name,
+            transportation
+          );
+        }
 
-          if (routeResult.success) {
-            distance = routeResult.distance;
-            duration = routeResult.duration;
-          }
+        if (routeResult.success) {
+          distance = routeResult.distance;
+          duration = routeResult.duration;
         }
       }
 
@@ -142,14 +173,7 @@ export class EstimateTimeTool {
           duration = localEstimation.estimatedTime || 0;
         } else {
           // 如果数据库中没有特定路径的信息，使用坐标计算估算
-          if (
-            originInfo.coordinates &&
-            destinationInfo.coordinates &&
-            originInfo.coordinates.latitude != null &&
-            originInfo.coordinates.longitude != null &&
-            destinationInfo.coordinates.latitude != null &&
-            destinationInfo.coordinates.longitude != null
-          ) {
+          if (originInfo.coordinates && destinationInfo.coordinates) {
             distance = this.calculateDistance(
               originInfo.coordinates.latitude,
               originInfo.coordinates.longitude,
@@ -221,14 +245,182 @@ export class EstimateTimeTool {
   }
 
   /**
+   * 高德地图地理编码API - 将地址转换为坐标
+   * @param address 地址或地名
+   * @returns 坐标信息
+   */
+  private async geocodeLocation(address: string): Promise<{
+    success: boolean;
+    coordinates?: { latitude: number; longitude: number };
+    message?: string;
+    formattedAddress?: string;
+  }> {
+    try {
+      if (!this.amapKey) {
+        return {
+          success: false,
+          message: "未配置高德地图API密钥，无法进行地理编码",
+        };
+      }
+
+      // 调用高德地图地理编码API
+      const url = `https://restapi.amap.com/v3/geocode/geo?address=${encodeURIComponent(
+        address
+      )}&key=${this.amapKey}`;
+      const response = await axios.get(url);
+      const data = response.data;
+
+      // 验证响应
+      if (data.status !== "1" || !data.geocodes || data.geocodes.length === 0) {
+        return {
+          success: false,
+          message: data.info || `无法找到"${address}"的坐标信息`,
+        };
+      }
+
+      // 获取第一个匹配结果
+      const geocode = data.geocodes[0];
+      const location = geocode.location.split(",");
+
+      return {
+        success: true,
+        coordinates: {
+          longitude: parseFloat(location[0]),
+          latitude: parseFloat(location[1]),
+        },
+        formattedAddress: geocode.formatted_address,
+      };
+    } catch (error) {
+      console.error(`地理编码时出错: ${error}`);
+      return {
+        success: false,
+        message: `地理编码时出错: ${error}`,
+      };
+    }
+  }
+
+  /**
+   * 将位置信息保存到数据库（异步操作）
+   * @param locationName 位置名称
+   * @param coordinates 坐标信息
+   */
+  private async saveLocationToDatabase(
+    locationName: string,
+    coordinates: { latitude: number; longitude: number }
+  ): Promise<void> {
+    try {
+      // 检查位置是否已存在
+      const existingLocations = await this.locationsModel.findLocations(
+        locationName
+      );
+
+      if (existingLocations && existingLocations.length > 0) {
+        // 如果位置已存在但没有坐标，更新坐标信息
+        const location = existingLocations[0];
+        if (!location.coordinates) {
+          await this.locationsModel["locationsCollection"].updateOne(
+            { _id: location._id },
+            {
+              $set: {
+                coordinates,
+                updatedAt: new Date(),
+                modifiedSinceSync: true,
+              },
+            }
+          );
+          console.log(`已更新位置"${locationName}"的坐标信息`);
+        }
+      } else {
+        // 创建新位置
+        const locationData: Partial<Location> = {
+          name: locationName,
+          coordinates,
+          type: "place", // 默认类型
+          syncedToNotion: false,
+          modifiedSinceSync: true,
+          lastSync: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        };
+
+        // 插入新位置
+        await this.locationsModel["locationsCollection"].insertOne(
+          locationData as any
+        );
+        console.log(`已创建新位置"${locationName}"`);
+      }
+    } catch (error) {
+      console.error(`保存位置信息到数据库时出错: ${error}`);
+      // 不抛出异常，因为这是异步操作，不影响主流程
+    }
+  }
+
+  /**
+   * 使用位置名称调用高德地图路径规划API
+   * @param originName 起点名称
+   * @param destinationName 终点名称
+   * @param mode 交通方式
+   * @returns API响应结果
+   */
+  private async callAmapRouteAPIByName(
+    originName: string,
+    destinationName: string,
+    mode: string = "walking"
+  ): Promise<{
+    success: boolean;
+    distance?: number;
+    duration?: number;
+    route?: any;
+    message?: string;
+  }> {
+    try {
+      // 确保有API密钥
+      if (!this.amapKey) {
+        return {
+          success: false,
+          message: "未配置高德地图API密钥",
+        };
+      }
+
+      // 首先进行地理编码，获取起终点坐标
+      const originGeocode = await this.geocodeLocation(originName);
+      const destinationGeocode = await this.geocodeLocation(destinationName);
+
+      if (!originGeocode.success || !destinationGeocode.success) {
+        return {
+          success: false,
+          message: "无法获取起点或终点的地理编码",
+        };
+      }
+
+      // 使用坐标进行路径规划
+      return await this.callAmapRouteAPI(
+        originGeocode.coordinates!,
+        destinationGeocode.coordinates!,
+        mode
+      );
+    } catch (error) {
+      console.error(`使用位置名称调用高德地图API时出错: ${error}`);
+      return {
+        success: false,
+        message: `使用位置名称调用高德地图API时出错: ${error}`,
+      };
+    }
+  }
+
+  /**
    * 解析位置信息
    * @param locationNameOrId 位置名称或ID
+   * @param allowPartialMatch 是否允许部分匹配
    * @returns 位置信息
    */
-  private async resolveLocation(locationNameOrId: string): Promise<{
+  private async resolveLocation(
+    locationNameOrId: string,
+    allowPartialMatch: boolean = false
+  ): Promise<{
     success: boolean;
     location?: any;
-    coordinates?: { latitude?: number; longitude?: number }; // 修改为可选属性
+    coordinates?: { latitude: number; longitude: number };
     message?: string;
   }> {
     try {
@@ -241,7 +433,12 @@ export class EstimateTimeTool {
           return {
             success: true,
             location,
-            coordinates: location.coordinates || {},
+            coordinates: location.coordinates
+              ? {
+                  latitude: location.coordinates.latitude,
+                  longitude: location.coordinates.longitude,
+                }
+              : undefined,
           };
         }
       }
@@ -255,50 +452,61 @@ export class EstimateTimeTool {
         return {
           success: true,
           location: locations[0],
-          coordinates: locations[0].coordinates || {},
+            coordinates: locations[0].coordinates ? {
+              latitude: locations[0].coordinates.latitude,
+              longitude: locations[0].coordinates.longitude
+            } : undefined,
         };
       }
 
-      // 3. 尝试模糊匹配
-      const fuzzyLocations = await this.locationsModel["locationsCollection"]
-        .find({
-          name: { $regex: locationNameOrId, $options: "i" },
-        })
-        .toArray();
+      // 3. 如果允许部分匹配，尝试模糊匹配
+      if (allowPartialMatch) {
+        const fuzzyLocations = await this.locationsModel["locationsCollection"]
+          .find({
+            name: { $regex: locationNameOrId, $options: "i" },
+          })
+          .toArray();
 
-      if (fuzzyLocations && fuzzyLocations.length > 0) {
-        return {
-          success: true,
-          location: fuzzyLocations[0],
-          coordinates: fuzzyLocations[0].coordinates || {},
-        };
-      }
+        if (fuzzyLocations && fuzzyLocations.length > 0) {
+          return {
+            success: true,
+            location: fuzzyLocations[0],
+            coordinates: fuzzyLocations[0].coordinates ? {
+              latitude: fuzzyLocations[0].coordinates.latitude,
+              longitude: fuzzyLocations[0].coordinates.longitude
+            } : undefined,
+          };
+        }
 
-      // 4. 如果是像"主楼323"这样的位置，尝试拆分查询
-      if (locationNameOrId.match(/^(.+?)(\d+)$/)) {
-        const matches = locationNameOrId.match(/^(.+?)(\d+)$/);
-        if (matches && matches.length === 3) {
-          const buildingName = matches[1].trim();
-          const roomNumber = matches[2];
+        // 4. 如果是像"主楼323"这样的位置，尝试拆分查询
+        if (locationNameOrId.match(/^(.+?)(\d+)$/)) {
+          const matches = locationNameOrId.match(/^(.+?)(\d+)$/);
+          if (matches && matches.length === 3) {
+            const buildingName = matches[1].trim();
+            const roomNumber = matches[2];
 
-          // 查找建筑物
-          const buildings = await this.locationsModel.findLocations(
-            buildingName
-          );
-          if (buildings && buildings.length > 0) {
-            // 找到建筑，创建一个虚拟的房间位置
-            const building = buildings[0];
-            return {
-              success: true,
-              location: {
-                _id: building._id, // 使用建筑物ID
-                name: `${building.name}${roomNumber}`, // 完整名称，如"主楼323"
-                parentLocationId: building._id, // 父位置为建筑物
-                coordinates: building.coordinates, // 使用建筑物坐标
-                roomNumber, // 额外添加房间号信息
-              },
-              coordinates: building.coordinates || {},
-            };
+            // 查找建筑物
+            const buildings = await this.locationsModel.findLocations(
+              buildingName
+            );
+            if (buildings && buildings.length > 0) {
+              // 找到建筑，创建一个虚拟的房间位置
+              const building = buildings[0];
+              return {
+                success: true,
+                location: {
+                  _id: building._id, // 使用建筑物ID
+                  name: `${building.name}${roomNumber}`, // 完整名称，如"主楼323"
+                  parentLocationId: building._id, // 父位置为建筑物
+                  coordinates: building.coordinates, // 使用建筑物坐标
+                  roomNumber, // 额外添加房间号信息
+                },
+                coordinates: building.coordinates ? {
+              latitude: building.coordinates.latitude,
+              longitude: building.coordinates.longitude
+            } : undefined,
+              };
+            }
           }
         }
       }
@@ -328,7 +536,7 @@ export class EstimateTimeTool {
   ): Promise<{
     success: boolean;
     location?: any;
-    coordinates?: { latitude?: number; longitude?: number }; // 修改为可选属性
+    coordinates?: { latitude: number; longitude: number };
     message?: string;
   }> {
     try {
@@ -367,7 +575,7 @@ export class EstimateTimeTool {
       }
 
       // 使用联系人地址查找位置
-      return await this.resolveLocation(contact[locationField]);
+      return await this.resolveLocation(contact[locationField], true);
     } catch (error) {
       console.error(`解析联系人位置时出错: ${error}`);
       return {
@@ -459,8 +667,8 @@ export class EstimateTimeTool {
    * @returns API响应结果
    */
   private async callAmapRouteAPI(
-    origin: { latitude?: number; longitude?: number }, // 修改为可选属性
-    destination: { latitude?: number; longitude?: number }, // 修改为可选属性
+    origin: { latitude: number; longitude: number },
+    destination: { latitude: number; longitude: number },
     mode: string = "walking"
   ): Promise<{
     success: boolean;
@@ -470,23 +678,11 @@ export class EstimateTimeTool {
     message?: string;
   }> {
     try {
-      // 确保有API密钥和完整的坐标
+      // 确保有API密钥
       if (!this.amapKey) {
         return {
           success: false,
           message: "未配置高德地图API密钥",
-        };
-      }
-
-      if (
-        origin.latitude == null ||
-        origin.longitude == null ||
-        destination.latitude == null ||
-        destination.longitude == null
-      ) {
-        return {
-          success: false,
-          message: "坐标信息不完整",
         };
       }
 
@@ -577,7 +773,7 @@ export class EstimateTimeTool {
             duration = duration / 60;
           } else {
             // 使用默认速度计算
-            const speeds: { [key: string]: number } = {
+            const speeds = {
               walking: 80, // 米/分钟
               bicycling: 250, // 米/分钟
               driving: 500, // 米/分钟

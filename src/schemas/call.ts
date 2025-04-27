@@ -458,13 +458,22 @@ async function handleEstimateTime(db: Db, args: Record<string, unknown>) {
     throw new Error("时间估算需要提供起点和终点");
   }
 
+  // 解析参数
+  const params = {
+    origin: args.origin as string,
+    destination: args.destination as string,
+    contactName: args.contactName as string,
+    transportation: args.transportation as string || "walking", // 默认步行
+  };
+
+  // 验证交通方式
+  const validTransportations = ["walking", "bicycling", "driving", "transit"];
+  if (params.transportation && !validTransportations.includes(params.transportation)) {
+    throw new Error(`无效的交通方式: ${params.transportation}, 可选: ${validTransportations.join(", ")}`);
+  }
+
   try {
-    const result = await estimateTimeTool.execute({
-      origin: args.origin as string,
-      destination: args.destination as string,
-      contactName: args.contactName as string,
-      transportation: args.transportation as string,
-    });
+    const result = await estimateTimeTool.execute(params);
 
     if (!result.success) {
       return formatResponse({
