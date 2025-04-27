@@ -15,9 +15,13 @@ import { LocationsModel } from "../model/locations.js";
 import { ContactsModel } from "../model/contacts.js";
 import { BioDataModel } from "../model/bioData.js";
 import { TasksModel } from "../model/tasks.js";
-import { contextManager } from "../utils/ContextManager.js";
-import { memoryManager } from "../model/memory.js";
-import { analyzeQuery } from "../utils/memoryUtils.js";
+import { MemoryModel } from "../model/memory.js";
+import {
+  calculateExpiryTime,
+  calculateInitialConfidence,
+  calculateStorageTier,
+  isImportantData,
+} from "../utils/memoryUtils.js";
 
 import { SchedulerManager } from "../utils/scheduler.js";
 
@@ -864,200 +868,132 @@ async function handleCallToolRequestWithMemory({
   client,
   db,
   isReadOnlyMode,
-  contextId = null, // 可以从Claude传入上下文ID
   schedulerManager = null,
 }: {
   request: CallToolRequest;
   client: MongoClient;
   db: Db;
   isReadOnlyMode: boolean;
-  contextId?: string | null;
   schedulerManager?: SchedulerManager | null;
 }) {
   const { name, arguments: args = {} } = request.params;
-  
-  // 1. 获取或创建上下文
-  if (!contextId) {
-    contextId = contextManager.createContext();
+
+  console.warn(`使用 Memory 系统处理工具调用: ${name}`);
+
+  // 检查工具是否启用记忆
+  if (!isToolMemoryEnabled(name)) {
+    console.warn(`记忆系统已禁用工具 ${name}，执行直接调用`);
+    return await handleCallToolRequest({
+      request,
+      client,
+      db,
+      isReadOnlyMode,
+    });
   }
-  
-  // 2. 分析查询复杂度
-  const analysis = analyzeQuery(name, args);
-  
-  console.log(`工具 ${name} 的复杂度评分: ${analysis.complexityScore}`);
-  
-  // 3. 创建或获取Memory管理器
-  const memory = memoryManager(db);
-  
-  // 4. 判断是否使用记忆 - 只对中高复杂度查询使用记忆
-  let resultFromMemory = null;
-  
-  if (analysis.complexityScore >= 3 && analysis.shouldCache) {
-    try {
-      // 尝试从记忆中查找
-      resultFromMemory = await memory.findMemory(name, args, {
-        confidenceThreshold: 0.7,
-        contextId: contextId
-      });
-      
-      if (resultFromMemory) {
-        console.log(`从记忆中获取结果: ${resultFromMemory._id}`);
-        
-        // 记录到上下文
-        contextManager.addQueryStep(
-          contextId,
-          name,
-          args,
-          resultFromMemory.result.data
-        );
-        
-        // 添加记忆信息到结果
-        const resultData = resultFromMemory.result.data;
-        resultData._fromMemory = true;
-        resultData._memoryId = resultFromMemory._id.toString();
-        resultData._confidence = resultFromMemory.result.confidence;
-        
-        return formatResponse(resultData);
-      }
-    } catch (error) {
-      console.error(`从记忆获取结果时出错: ${error}`);
-      // 错误不中断流程，继续正常调用
+
+  // 创建 Memory 管理器
+  const memoryModel = new MemoryModel(db);
+
+  // 1. 检查是否有匹配的缓存
+  const confidenceThreshold = getConfidenceThreshold("findMemory");
+  const cachedMemory = await memoryModel.findMemory(
+    name,
+    args,
+    confidenceThreshold
+  );
+
+  // 2. 如果有高置信度的缓存，直接使用
+  const highConfidenceThreshold = getConfidenceThreshold("highConfidence");
+  if (
+    cachedMemory &&
+    cachedMemory.resultInfo.confidence >= highConfidenceThreshold &&
+    (!cachedMemory.classification.expiresAt ||
+      cachedMemory.classification.expiresAt > new Date())
+  ) {
+    // 更新访问信息
+    await memoryModel.updateAccessInfo(cachedMemory._id);
+
+    console.warn(
+      `找到匹配的 Memory 缓存，ID: ${cachedMemory._id}, 置信度: ${cachedMemory.resultInfo.confidence}`
+    );
+
+    // 添加 Memory 信息到响应
+    const result = cachedMemory.resultInfo.result;
+
+    // 标记为缓存结果
+    if (typeof result === "object" && result !== null) {
+      result._fromMemory = true;
+      result._memoryId = cachedMemory._id.toString();
+      result._confidence = cachedMemory.resultInfo.confidence;
+      result._cachedAt = cachedMemory.resultInfo.timestamp;
+      result._tier = cachedMemory.classification.tier;
     }
+
+    return formatResponse(result);
   }
-  
-  // 5. 执行实际工具调用
-  console.log(`执行工具调用: ${name}`);
+
+  // 3. 如果没有缓存或置信度不够，执行实际调用
+  console.warn(`未找到匹配的缓存或置信度不足，执行实际调用`);
+
+  // 调用原始处理函数处理工具请求
   const response = await handleCallToolRequest({
     request,
     client,
     db,
     isReadOnlyMode,
   });
-  
-  try {
-    // 从响应中提取结果
-    const resultData = JSON.parse(response.content[0].text);
-    
-    // 6. 记录查询步骤到上下文
-    contextManager.addQueryStep(contextId, name, args, resultData);
-    
-    // 7. 判断是否存储记忆
-    if (analysis.complexityScore >= 3 && analysis.shouldCache) {
-      try {
-        // 检查是否有实体依赖
-        const dependencies: any[] = [];
-        
-        // 调用特定方法提取依赖 - 这里需要实现
-        extractEntityDependencies(name, args, resultData, dependencies);
-        
-        // 存储记忆
-        const storedMemory = await memory.storeMemory(name, args, resultData, {
-          contextId,
-          dependencies
-        });
-        
-        if (storedMemory) {
-          console.log(`存储记忆: ${storedMemory._id}`);
-          resultData._memoryId = storedMemory._id.toString();
-          resultData._newlyStored = true;
-        }
-      } catch (error) {
-        console.error(`存储记忆时出错: ${error}`);
-      }
-    }
-    
-    // 8. 检查上下文是否应该创建复合记忆
-    if (contextManager.isCompoundQuery(contextId)) {
-      try {
-        const context = contextManager.getContext(contextId);
-        
-        if (context && context.steps.length >= 3) {
-          // 提取所有步骤
-          const steps = context.steps.map(step => ({
-            toolName: step.toolName,
-            params: step.params,
-            result: step.result
-          }));
-          
-          // 创建复合记忆
-          const compoundMemory = await memory.storeCompoundMemory(
-            contextId,
-            steps
-          );
-          
-          if (compoundMemory) {
-            console.log(`创建复合记忆: ${compoundMemory._id}`);
-          }
-        }
-      } catch (error) {
-        console.error(`创建复合记忆时出错: ${error}`);
-      }
-    }
-    
-    // 重新格式化响应
-    return formatResponse(resultData);
-  } catch (error) {
-    console.error(`处理响应结果时出错: ${error}`);
-    // 发生错误时返回原始响应
-    return response;
-  }
-}
 
-/**
- * 从查询和结果中提取实体依赖
- */
-function extractEntityDependencies(
-  toolName: string,
-  params: any,
-  result: any,
-  dependencies: any[]
-) {
-  // 这个函数需要根据不同工具类型实现详细的依赖提取逻辑
-  // 示例：
-  switch (toolName) {
-    case "find_item":
-      if (result.itemId) {
-        dependencies.push({
-          entityType: "item",
-          entityId: result.itemId,
-          relationship: "primary"
-        });
+  try {
+    // 4. 从响应中提取实际结果对象
+    const resultData = JSON.parse(response.content[0].text);
+
+    // 5. 判断是否适合缓存
+    const shouldCache =
+      // 不缓存修改操作
+      !name.startsWith("update_") &&
+      !name.startsWith("delete_") &&
+      !name.startsWith("transfer_") &&
+      !name.startsWith("add_") &&
+      // 检查是否为重要数据
+      !isImportantData(name, args) &&
+      // 检查结果是否有效
+      typeof resultData === "object" &&
+      resultData !== null;
+
+    if (shouldCache) {
+      try {
+        console.warn(`存储结果到 Memory 缓存`);
+
+        // 6. 根据查询类型决定存储层级和有效期
+        const tier = calculateStorageTier(name, args);
+        const initialConfidence = calculateInitialConfidence(name, args);
+        const expiresAt = calculateExpiryTime(tier, name, args);
+
+        console.warn(
+          `存储层级: ${tier}, 初始置信度: ${initialConfidence}, 过期时间: ${expiresAt}`
+        );
+
+        const memory = await memoryModel.storeMemory(name, args, resultData);
+
+        // 添加 Memory ID 到结果
+        resultData._memoryId = memory._id.toString();
+        resultData._newlyStored = true;
+
+        // 重新格式化响应
+        return formatResponse(resultData);
+      } catch (error) {
+        console.error(`存储 Memory 失败:`, error);
       }
-      if (result.items && Array.isArray(result.items)) {
-        result.items.forEach((item: any) => {
-          if (item.itemId) {
-            dependencies.push({
-              entityType: "item",
-              entityId: item.itemId,
-              relationship: "primary"
-            });
-          }
-        });
-      }
-      break;
-      
-    case "estimate_time":
-      if (result.estimation) {
-        if (result.estimation.origin && result.estimation.origin.id) {
-          dependencies.push({
-            entityType: "location",
-            entityId: result.estimation.origin.id,
-            relationship: "primary"
-          });
-        }
-        
-        if (result.estimation.destination && result.estimation.destination.id) {
-          dependencies.push({
-            entityType: "location",
-            entityId: result.estimation.destination.id,
-            relationship: "primary"
-          });
-        }
-      }
-      break;
-      
-    // 添加其他工具的依赖提取逻辑...
+    } else {
+      console.warn(`结果不适合缓存，跳过存储到 Memory`);
+    }
+  } catch (error) {
+    console.error(`处理响应结果失败:`, error);
+    // 如果处理失败，返回原始响应
   }
+
+  // 如果无法处理或不应缓存，返回原始响应
+  return response;
 }
 
 export { handleCallToolRequest, handleCallToolRequestWithMemory };
