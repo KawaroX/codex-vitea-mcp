@@ -311,37 +311,116 @@ export async function handleListToolsRequest({
   ];
 
   if (!isReadOnlyMode) {
-    viteaTools.push({
-      name: "update_item",
-      description: "更新物品位置或状态",
-      inputSchema: {
-        type: "object",
-        properties: {
-          itemId: {
-            type: "string",
-            description: "物品ID",
+    viteaTools.push(
+      // 添加物品创建工具
+      {
+        name: "create_item",
+        description: "创建新物品",
+        inputSchema: {
+          type: "object",
+          properties: {
+            name: {
+              type: "string",
+              description: "物品名称",
+            },
+            category: {
+              type: "string",
+              description: "物品类别（可选）",
+            },
+            status: {
+              type: "string",
+              description: '物品状态（可选，默认为"在用"）',
+            },
+            quantity: {
+              type: "integer",
+              description: "物品数量（可选，默认为1）",
+            },
+            isContainer: {
+              type: "boolean",
+              description: "是否为容器（可选，默认为false）",
+            },
+            locationId: {
+              type: "string",
+              description: "位置ID",
+            },
+            locationName: {
+              type: "string",
+              description: "位置名称（如果未提供ID）",
+            },
+            containerId: {
+              type: "string",
+              description: "容器ID",
+            },
+            containerName: {
+              type: "string",
+              description: "容器名称（如果未提供ID）",
+            },
+            note: {
+              type: "string",
+              description: "创建备注（可选）",
+            },
           },
-          search: {
-            type: "string",
-            description: "搜索关键词",
-          },
-          containerId: {
-            type: "string",
-            description: "容器ID，用于查询容器内物品",
-          },
-          containerItems: {
-            type: "boolean",
-            description: "是否查询容器内物品，需要与containerId一起使用",
-            default: false,
-          },
+          required: ["name"],
         },
-        oneOf: [
-          { required: ["itemId"] },
-          { required: ["search"] },
-          { required: ["containerId", "containerItems"] },
-        ],
-      },
-    });
+      } as any,
+
+      // 添加物品删除工具
+      {
+        name: "delete_item",
+        description: "删除物品",
+        inputSchema: {
+          type: "object",
+          properties: {
+            itemId: {
+              type: "string",
+              description: "物品ID",
+            },
+            itemName: {
+              type: "string",
+              description: "物品名称（如果未提供ID）",
+            },
+            isSoftDelete: {
+              type: "boolean",
+              description:
+                "是否软删除（标记为已删除而不是真正删除，可选，默认为true）",
+              default: true,
+            },
+          },
+          oneOf: [{ required: ["itemId"] }, { required: ["itemName"] }],
+        },
+      } as any,
+      {
+        name: "update_item",
+        description: "更新物品位置或状态",
+        inputSchema: {
+          type: "object",
+          properties: {
+            itemId: {
+              type: "string",
+              description: "物品ID",
+            },
+            search: {
+              type: "string",
+              description: "搜索关键词",
+            },
+            containerId: {
+              type: "string",
+              description: "容器ID，用于查询容器内物品",
+            },
+            containerItems: {
+              type: "boolean",
+              description: "是否查询容器内物品，需要与containerId一起使用",
+              default: false,
+            },
+          },
+          oneOf: [
+            { required: ["itemId"] },
+            { required: ["search"] },
+            { required: ["containerId", "containerItems"] },
+          ],
+        },
+      }
+    );
 
     viteaTools.push(
       {
