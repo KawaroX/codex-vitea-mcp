@@ -22,11 +22,182 @@ export class ItemsModel {
   }
 
   /**
+   * 创建新物品
+   * @param itemData 物品数据
+   * @returns 创建结果
+   */
+  async createItem(itemData: Partial<Item>): Promise<{
+    success: boolean;
+    item?: Item;
+    error?: string;
+  }> {
+    try {
+      // 验证必填字段
+      if (!itemData.name) {
+        return {
+          success: false,
+          error: "物品名称是必需的",
+        };
+      }
+
+      // 设置默认值
+      const newItem: Partial<Item> = {
+        ...itemData,
+        status: itemData.status || "在用",
+        quantity: itemData.quantity || 1,
+        isContainer: itemData.isContainer || false,
+        syncedToNotion: false,
+        modifiedSinceSync: true,
+        lastSync: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      // 确保ID类型正确
+      if (itemData.locationId) {
+        newItem.locationId = ensureObjectId(itemData.locationId);
+      }
+
+      if (itemData.containerId) {
+        newItem.containerId = ensureObjectId(itemData.containerId);
+      }
+
+      // 插入新物品
+      const result = await this.itemsCollection.insertOne(newItem as any);
+
+      if (!result.acknowledged) {
+        return {
+          success: false,
+          error: "插入物品失败",
+        };
+      }
+
+      // 如果指定了容器，将物品添加到容器的containedItems中
+      if (newItem.containerId) {
+        await this.itemsCollection.updateOne(
+          { _id: ensureObjectId(newItem.containerId) },
+          {
+            $addToSet: { containedItems: result.insertedId },
+            $set: {
+              updatedAt: new Date(),
+              modifiedSinceSync: true,
+            },
+          }
+        );
+      }
+
+      // 查询刚插入的物品
+      const item = await this.getItemById(result.insertedId);
+
+      return {
+        success: true,
+        item: item || undefined,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: `创建物品失败: ${error}`,
+      };
+    }
+  }
+
+  /**
+   * 删除物品
+   * @param itemId 物品ID
+   * @param isSoftDelete 是否软删除 (标记为已删除而不是真正删除)
+   * @returns 删除结果
+   */
+  async deleteItem(
+    itemId: string | ObjectId,
+    isSoftDelete: boolean = true
+  ): Promise<{
+    success: boolean;
+    error?: string;
+  }> {
+    try {
+      const id = ensureObjectId(itemId);
+
+      // 查询物品
+      const item = await this.getItemById(id);
+
+      if (!item) {
+        return {
+          success: false,
+          error: "未找到物品",
+        };
+      }
+
+      // 如果物品是容器且包含其他物品，不允许删除
+      if (
+        item.isContainer &&
+        item.containedItems &&
+        item.containedItems.length > 0
+      ) {
+        return {
+          success: false,
+          error: `物品"${item.name}"是容器且包含${item.containedItems.length}个物品，无法删除`,
+        };
+      }
+
+      // 如果是软删除，只更新状态
+      if (isSoftDelete) {
+        const result = await this.itemsCollection.updateOne(
+          { _id: id },
+          {
+            $set: {
+              status: "已删除",
+              updatedAt: new Date(),
+              modifiedSinceSync: true,
+            },
+          }
+        );
+
+        if (result.matchedCount === 0) {
+          return {
+            success: false,
+            error: "更新物品状态失败",
+          };
+        }
+      } else {
+        // 如果物品在容器中，从容器的containedItems中移除
+        if (item.containerId) {
+          await this.itemsCollection.updateOne(
+            { _id: ensureObjectId(item.containerId) },
+            {
+              $pull: { containedItems: id },
+              $set: {
+                updatedAt: new Date(),
+                modifiedSinceSync: true,
+              },
+            }
+          );
+        }
+
+        // 硬删除
+        const result = await this.itemsCollection.deleteOne({ _id: id });
+
+        if (result.deletedCount === 0) {
+          return {
+            success: false,
+            error: "删除物品失败",
+          };
+        }
+      }
+
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: `删除物品失败: ${error}`,
+      };
+    }
+
    * 获取所有物品
    * @returns 物品数组
    */
   async getAllItems(): Promise<Item[]> {
     return await this.itemsCollection.find({}).toArray();
+
   }
 
   /**
