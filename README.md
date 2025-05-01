@@ -64,7 +64,11 @@ npm start
       "args": [
         "-y",
         "codex-vitea-mcp",
-        "mongodb+srv://username:password@cluster.mongodb.net/database"
+      ],
+      "env": [
+        "MCP_MONGODB_URI": "mongodb+srv://username:password@cluster.mongodb.net/database",
+        "AMAP_API_KEY": "YOU_API_KEY",
+        "MCP_MONGODB_READONLY": false
       ]
     }
   }
