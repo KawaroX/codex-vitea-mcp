@@ -22,6 +22,26 @@ import { CreateTaskTool } from "../tools/createTask.js";
 import { DeleteTaskTool } from "../tools/deleteTask.js";
 import { UpdateTaskInfoTool } from "../tools/updateTaskInfo.js";
 
+import { ReminisceTool } from "../tools/reminisceTool.js";
+import {
+  LearnParams,
+  RecallParams,
+} from "../features/reminisce/proReminisceManager.js"; // 确保路径正确
+
+import {
+  PlanningTool,
+  LearnSchedulingPreferenceParams,
+} from "../tools/planningTool.js";
+// 导入 PlanningTool 方法所需的参数类型
+import {
+  SchedulingConstraints,
+  CurrentUserContext,
+} from "../features/planning/intelligentPlanner.js";
+import {
+  PlanConfirmScheduleSlotTool,
+  ConfirmScheduleSlotParams,
+} from "../tools/planConfirmScheduleSlotTool.js"; // 新增导入
+
 import { ItemsModel } from "../model/items.js";
 import { LocationsModel } from "../model/locations.js";
 import { ContactsModel } from "../model/contacts.js";
@@ -63,8 +83,21 @@ type MongoOperation =
   | "query_task" // 查询任务
   | "get_pending_tasks" // 获取待办任务
   | "update_task_status" // 更新任务状态
-  // 其他
-  | "add_structured_note"; // 添加结构化笔记
+  // 笔记操作
+  | "add_structured_note"
+  | "search_notes"
+  // Reminisce 操作
+  | "reminisce_learn"
+  | "reminisce_recall"
+  | "reminisce_manage_memory"
+  // Planning 工具操作名 ---
+  | "plan_propose_task_schedule"
+  | "plan_suggest_next_task"
+  | "plan_generate_daily_agenda"
+  | "plan_reschedule_event"
+  | "plan_find_available_time_slots"
+  | "plan_learn_scheduling_preference"
+  | "plan_confirm_schedule_slot";
 
 // 不允许在只读模式下执行的操作
 const WRITE_OPERATIONS = [
@@ -82,6 +115,14 @@ const WRITE_OPERATIONS = [
   "create_task",
   "delete_task",
   "update_task_info",
+  "update_task_status",
+  "add_structured_note",
+  "reminisce_learn",
+  "reminisce_manage_memory",
+  "plan_propose_task_schedule",
+  "plan_reschedule_event",
+  "plan_learn_scheduling_preference",
+  "plan_confirm_schedule_slot",
 ];
 
 // ObjectId 转换模式
@@ -170,6 +211,98 @@ export async function handleCallToolRequest({
         return await handleAddStructuredNote(db, args);
       case "search_notes":
         return await handleSearchNotes(db, args);
+
+      // --- 新增 Reminisce 工具的 case ---
+      case "reminisce_learn": {
+        const reminisceTool = new ReminisceTool(db);
+        // 我们需要确保 args 符合 LearnParams 类型
+        // MCP SDK 会进行 schema 验证，但在这里进行类型转换是安全的
+        const result = await reminisceTool.learn(
+          args as unknown as LearnParams
+        );
+        return formatResponse(result);
+      }
+      case "reminisce_recall": {
+        const reminisceTool = new ReminisceTool(db);
+        const result = await reminisceTool.recall(
+          args as unknown as RecallParams
+        );
+        return formatResponse(result);
+      }
+      case "reminisce_manage_memory": {
+        const reminisceTool = new ReminisceTool(db);
+        // manageMemory 的参数结构比较特定，需要确保 args 匹配
+        const result = await reminisceTool.manageMemory(
+          args as {
+            memoryId: string | ObjectId;
+            action:
+              | "update_importance"
+              | "update_confidence"
+              | "change_tier"
+              | "add_tag"
+              | "remove_tag"
+              | "archive"
+              | "unarchive";
+            value?: any;
+          }
+        );
+        return formatResponse(result);
+      }
+
+      // --- 新增 Planning 工具的 case ---
+      case "plan_propose_task_schedule": {
+        const tool = new PlanningTool(db);
+        // 参数类型断言，MCP SDK会做schema验证
+        const params = args as {
+          taskId: string | ObjectId;
+          constraints?: SchedulingConstraints;
+        };
+        return formatResponse(await tool.proposeTaskSchedule(params));
+      }
+      case "plan_suggest_next_task": {
+        const tool = new PlanningTool(db);
+        const params = args as { context: CurrentUserContext };
+        return formatResponse(await tool.suggestNextTask(params));
+      }
+      case "plan_generate_daily_agenda": {
+        const tool = new PlanningTool(db);
+        const params = args as { date: string | Date; userId?: string };
+        return formatResponse(await tool.generateDailyAgenda(params));
+      }
+      case "plan_reschedule_event": {
+        const tool = new PlanningTool(db);
+        const params = args as {
+          eventOrTaskId: string | ObjectId;
+          newTime?: { startTime: string | Date; endTime: string | Date };
+          reason?: string;
+        };
+        return formatResponse(await tool.rescheduleEvent(params));
+      }
+      case "plan_find_available_time_slots": {
+        const tool = new PlanningTool(db);
+        const params = args as {
+          durationMinutes: number;
+          dateRange?: { start: string | Date; end: string | Date };
+          constraints?: any; // 简化类型，实际应与 PlanningTool 定义一致
+        };
+        return formatResponse(await tool.findAvailableTimeSlots(params));
+      }
+      case "plan_learn_scheduling_preference": {
+        const tool = new PlanningTool(db);
+        return formatResponse(
+          await tool.learnSchedulingPreference(
+            args as unknown as LearnSchedulingPreferenceParams
+          )
+        );
+      }
+      // --- 新增：处理 plan_confirm_schedule_slot ---
+      case "plan_confirm_schedule_slot": {
+        const tool = new PlanConfirmScheduleSlotTool(db);
+        // 参数类型断言，MCP SDK会做schema验证
+        const params = args as unknown as ConfirmScheduleSlotParams;
+        return formatResponse(await tool.execute(params));
+      }
+
       default:
         throw new Error(`未知操作: ${operation}`);
     }
@@ -463,13 +596,20 @@ async function handleEstimateTime(db: Db, args: Record<string, unknown>) {
     origin: args.origin as string,
     destination: args.destination as string,
     contactName: args.contactName as string,
-    transportation: args.transportation as string || "walking", // 默认步行
+    transportation: (args.transportation as string) || "walking", // 默认步行
   };
 
   // 验证交通方式
   const validTransportations = ["walking", "bicycling", "driving", "transit"];
-  if (params.transportation && !validTransportations.includes(params.transportation)) {
-    throw new Error(`无效的交通方式: ${params.transportation}, 可选: ${validTransportations.join(", ")}`);
+  if (
+    params.transportation &&
+    !validTransportations.includes(params.transportation)
+  ) {
+    throw new Error(
+      `无效的交通方式: ${
+        params.transportation
+      }, 可选: ${validTransportations.join(", ")}`
+    );
   }
 
   try {
@@ -1013,7 +1153,7 @@ async function handleUpdateTaskInfo(db: Db, args: Record<string, unknown>) {
       newTaskType: args.newTaskType as string,
       newDescription: args.newDescription as string,
       newWorkloadLevel: args.newWorkloadLevel as string,
-      newAssignee: args.newAssignee as string,
+      newAssigneeId: args.newAssigneeId as string,
       newTags: args.newTags as string[],
       note: args.note as string,
     });

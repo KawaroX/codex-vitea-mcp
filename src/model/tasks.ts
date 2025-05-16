@@ -1,32 +1,85 @@
-import { type Collection, ObjectId, type Db } from "mongodb";
-import { Task, StructuredNote, ensureObjectId } from "./types.js";
+import {
+  type Collection,
+  ObjectId,
+  type Db,
+  Filter,
+  UpdateFilter,
+} from "mongodb";
+import {
+  Task,
+  StructuredNote,
+  ensureObjectId,
+  RequiredResource,
+  SyncFields,
+  MemoryPattern,
+} from "./types.js";
+import {
+  ProReminisceManager,
+  LearnParams,
+} from "../features/reminisce/proReminisceManager.js"; // Ensure this path is correct
 
-interface TaskWithStructuredNotes extends Omit<Task, "notes"> {
-  notes: StructuredNote[];
-}
+export type NewTaskData = Partial<
+  Omit<Task, "_id" | "createdAt" | "updatedAt" | keyof SyncFields>
+>;
 
-/**
- * 任务数据操作类
- */
 export class TasksModel {
-  private tasksCollection: Collection<TaskWithStructuredNotes>;
+  private tasksCollection: Collection<Task>;
   private db: Db;
+  private reminisceManager: ProReminisceManager;
 
   constructor(db: Db) {
     this.db = db;
-    this.tasksCollection = db.collection<TaskWithStructuredNotes>("tasks");
+    this.tasksCollection = db.collection<Task>("tasks");
+    this.reminisceManager = new ProReminisceManager(db); // Initialize here
+    this._ensureIndexes();
   }
 
-  /**
-   * 获取所有任务
-   * @param query 可选的查询条件
-   * @param limit 限制返回任务数量
-   * @returns 任务列表
-   */
+  private async _ensureIndexes(): Promise<void> {
+    try {
+      await this.tasksCollection.createIndex({
+        status: 1,
+        dueDate: 1,
+        priority: -1,
+      });
+      await this.tasksCollection.createIndex({ tags: 1 });
+      await this.tasksCollection.createIndex({ taskType: 1 });
+      await this.tasksCollection.createIndex(
+        { projectId: 1 },
+        { sparse: true }
+      );
+      await this.tasksCollection.createIndex(
+        { assigneeId: 1 },
+        { sparse: true }
+      );
+      await this.tasksCollection.createIndex(
+        { dependencies: 1 },
+        { sparse: true }
+      );
+      await this.tasksCollection.createIndex(
+        { importanceScore: -1 },
+        { sparse: true }
+      );
+      await this.tasksCollection.createIndex(
+        { urgencyScore: -1 },
+        { sparse: true }
+      );
+      await this.tasksCollection.createIndex(
+        { scheduledStartTime: 1 },
+        { sparse: true }
+      );
+      console.log("TasksModel: Indexes for 'tasks' collection ensured.");
+    } catch (error) {
+      console.error(
+        "TasksModel: Error ensuring indexes for 'tasks' collection:",
+        error
+      );
+    }
+  }
+
   async getAllTasks(
-    query: Record<string, any> = {},
+    query: Filter<Task> = {},
     limit: number = 20
-  ): Promise<TaskWithStructuredNotes[]> {
+  ): Promise<Task[]> {
     return await this.tasksCollection
       .find(query)
       .sort({ dueDate: 1, priority: -1 })
@@ -34,373 +87,474 @@ export class TasksModel {
       .toArray();
   }
 
-  /**
-   * 获取待办任务
-   * @param limit 限制返回任务数量
-   * @returns 待办任务列表
-   */
-  async getPendingTasks(limit: number = 10): Promise<TaskWithStructuredNotes[]> {
+  async getPendingTasks(limit: number = 10): Promise<Task[]> {
     return await this.tasksCollection
-      .find({ status: { $ne: "已完成" } })
-      .sort({ dueDate: 1, priority: -1 })
+      .find({ status: { $nin: ["已完成", "已取消"] } })
+      .sort({ urgencyScore: -1, importanceScore: -1, dueDate: 1, priority: -1 })
       .limit(limit)
       .toArray();
   }
 
-  /**
-   * 获取即将到期的任务
-   * @param daysThreshold 到期天数阈值
-   * @returns 即将到期的任务列表
-   */
-  async getUpcomingTasks(daysThreshold: number = 7): Promise<TaskWithStructuredNotes[]> {
+  async getUpcomingTasks(daysThreshold: number = 7): Promise<Task[]> {
     const now = new Date();
     const thresholdDate = new Date();
     thresholdDate.setDate(now.getDate() + daysThreshold);
-
     return await this.tasksCollection
       .find({
-        status: { $ne: "已完成" },
-        dueDate: {
-          $gte: now,
-          $lte: thresholdDate,
-        },
+        status: { $nin: ["已完成", "已取消"] },
+        dueDate: { $gte: now, $lte: thresholdDate },
       })
-      .sort({ dueDate: 1, priority: -1 })
+      .sort({ dueDate: 1, urgencyScore: -1, importanceScore: -1 })
       .toArray();
   }
 
-  /**
-   * 获取逾期任务
-   * @returns 逾期任务列表
-   */
-  async getOverdueTasks(): Promise<TaskWithStructuredNotes[]> {
+  async getOverdueTasks(): Promise<Task[]> {
     const now = new Date();
-
     return await this.tasksCollection
       .find({
-        status: { $ne: "已完成" },
+        status: { $nin: ["已完成", "已取消"] },
         dueDate: { $lt: now },
+        completionDate: { $exists: false },
       })
-      .sort({ dueDate: 1, priority: -1 })
+      .sort({ dueDate: 1, urgencyScore: -1, importanceScore: -1 })
       .toArray();
   }
 
-  /**
-   * 根据ID获取任务
-   * @param taskId 任务ID
-   * @returns 任务对象
-   */
-  async getTaskById(taskId: ObjectId): Promise<TaskWithStructuredNotes | null> {
+  async getTaskById(taskId: ObjectId | string): Promise<Task | null> {
     const id = ensureObjectId(taskId);
     return await this.tasksCollection.findOne({ _id: id });
   }
 
-  /**
-   * 根据标签查找任务
-   * @param tag 标签
-   * @returns 匹配的任务列表
-   */
-  async getTasksByTag(tag: string): Promise<TaskWithStructuredNotes[]> {
+  async getTasksByTag(tag: string): Promise<Task[]> {
     return await this.tasksCollection
       .find({ tags: tag })
       .sort({ dueDate: 1, priority: -1 })
       .toArray();
   }
 
-  /**
-   * 根据任务类型查找任务
-   * @param taskType 任务类型
-   * @returns 匹配的任务列表
-   */
-  async getTasksByType(taskType: string): Promise<TaskWithStructuredNotes[]> {
+  async getTasksByType(taskType: string): Promise<Task[]> {
     return await this.tasksCollection
       .find({ taskType: { $regex: taskType, $options: "i" } })
       .sort({ dueDate: 1, priority: -1 })
       .toArray();
   }
 
-  /**
-   * 添加新任务
-   * @param taskData 任务数据
-   * @returns 操作结果
-   */
-  async addTask(taskData: Partial<TaskWithStructuredNotes>): Promise<{
+  async addTask(taskData: NewTaskData): Promise<{
     success: boolean;
-    task?: TaskWithStructuredNotes;
+    task?: Task;
     error?: string;
   }> {
     try {
-      // 检查是否有截止日期并计算是否逾期
-      if (taskData.dueDate) {
-        const dueDate = new Date(taskData.dueDate);
-        const now = new Date();
-        taskData.isOverdue = dueDate < now;
+      const now = new Date();
+      let processedNotes: StructuredNote[] = [];
+      if (typeof taskData.notes === "string") {
+        processedNotes.push({
+          timestamp: now.toISOString().split("T")[0],
+          content: taskData.notes,
+        });
+      } else if (Array.isArray(taskData.notes)) {
+        processedNotes = taskData.notes as StructuredNote[];
       }
 
-      // 添加通用字段
-      const newTask: Partial<TaskWithStructuredNotes> = {
-        ...taskData,
-        status: taskData.status || "未开始",
+      const newTaskDocument: Omit<Task, "_id"> = {
+        name: taskData.name || "未命名任务",
+        status: taskData.status || "待办",
+        createdAt: now,
+        updatedAt: now,
         syncedToNotion: false,
-        modifiedSinceSync: true,
         lastSync: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
+        modifiedSinceSync: true,
+        description: taskData.description,
+        dueDate: taskData.dueDate ? new Date(taskData.dueDate) : undefined,
+        deadlineType: taskData.deadlineType || "soft",
+        scheduledStartTime: taskData.scheduledStartTime
+          ? new Date(taskData.scheduledStartTime)
+          : undefined,
+        scheduledEndTime: taskData.scheduledEndTime
+          ? new Date(taskData.scheduledEndTime)
+          : undefined,
+        estimatedEffortHours: taskData.estimatedEffortHours,
+        actualEffortHours: taskData.actualEffortHours,
+        completionDate: taskData.completionDate,
+        preferredTimeOfDay: taskData.preferredTimeOfDay || "any",
+        contextualTags: taskData.contextualTags || [],
+        priority: taskData.priority || "中",
+        importanceScore: taskData.importanceScore,
+        urgencyScore: taskData.urgencyScore,
+        taskType: taskData.taskType,
+        projectId: taskData.projectId
+          ? ensureObjectId(taskData.projectId)
+          : undefined,
+        dependencies:
+          taskData.dependencies?.map((depId) => ensureObjectId(depId)) || [],
+        subTasks:
+          taskData.subTasks?.map((subId) => ensureObjectId(subId)) || [],
+        requiredResources:
+          taskData.requiredResources?.map((res) => ({
+            ...res,
+            resourceId: res.resourceId
+              ? ensureObjectId(res.resourceId)
+              : undefined,
+          })) || [],
+        difficulty: taskData.difficulty || "medium",
+        energyLevelRequired: taskData.energyLevelRequired || "medium",
+        assigneeId: taskData.assigneeId
+          ? ensureObjectId(taskData.assigneeId)
+          : undefined,
+        assigneeName: taskData.assigneeName,
+        delegatedTo: taskData.delegatedTo
+          ? ensureObjectId(taskData.delegatedTo)
+          : undefined,
+        isRecurring: taskData.isRecurring || false,
+        recurrenceRule: taskData.recurrenceRule,
+        nextRecurrenceDate: taskData.nextRecurrenceDate
+          ? new Date(taskData.nextRecurrenceDate)
+          : undefined,
+        isOverdue: false,
+        workloadLevel: taskData.workloadLevel,
+        tags: taskData.tags || [],
+        notes: processedNotes,
+        customFields: taskData.customFields,
       };
 
-      // 插入新任务
-      const result = await this.tasksCollection.insertOne(newTask as any);
-
-      if (!result.acknowledged) {
-        return { success: false, error: "添加任务失败" };
+      if (
+        newTaskDocument.dueDate &&
+        newTaskDocument.status !== "已完成" &&
+        newTaskDocument.status !== "已取消"
+      ) {
+        newTaskDocument.isOverdue = new Date(newTaskDocument.dueDate) < now;
+      } else {
+        newTaskDocument.isOverdue = false;
       }
 
-      // 查询插入的任务
-      const insertedTask = await this.tasksCollection.findOne({
-        _id: result.insertedId,
-      });
-
-      return {
-        success: true,
-        task: insertedTask || undefined,
-      };
-    } catch (error) {
+      const result = await this.tasksCollection.insertOne(
+        newTaskDocument as Task
+      );
+      if (!result.insertedId)
+        return { success: false, error: "添加任务失败，数据库未返回ID。" };
+      const insertedTask = await this.getTaskById(result.insertedId);
+      return { success: true, task: insertedTask || undefined };
+    } catch (error: any) {
+      console.error("TasksModel: Error in addTask():", error);
       return {
         success: false,
-        error: `添加任务失败: ${error}`,
+        error: `添加任务失败: ${error.message || error}`,
       };
     }
   }
 
-  /**
-   * 更新任务状态
-   * @param taskId 任务ID
-   * @param newStatus 新状态
-   * @param comment 可选备注
-   * @returns 更新结果
-   */
   async updateTaskStatus(
     taskId: string | ObjectId,
     newStatus: string,
     comment: string | null = null
   ): Promise<{
     success: boolean;
-    task?: TaskWithStructuredNotes;
+    task?: Task;
     error?: string;
+    message?: string;
   }> {
     try {
       const id = ensureObjectId(taskId);
+      let task = await this.getTaskById(id);
 
-      // 查询任务
-      const task = await this.getTaskById(id);
-
-      if (!task) {
-        return { success: false, error: "未找到任务" };
-      }
+      if (!task) return { success: false, error: "未找到任务" };
 
       const oldStatus = task.status;
+      if (oldStatus === newStatus)
+        return { success: true, task, message: "任务状态未变化" };
 
-      // 如果状态没有变化，则直接返回
-      if (oldStatus === newStatus) {
-        return {
-          success: true,
-          task,
-          error: "任务状态未变化",
-        };
-      }
+      const updateSetFields: Partial<Task> = { status: newStatus };
+      const now = new Date();
 
-      // 创建更新对象
-      const updateObj: any = {
-        status: newStatus,
-        updatedAt: new Date(),
-        modifiedSinceSync: true,
-      };
-
-      // 如果标记为完成，更新完成时间和逾期状态
       if (newStatus === "已完成") {
-        const now = new Date();
-        updateObj.completedAt = now;
-
-        // 检查是否逾期
-        if (task.dueDate && new Date(task.dueDate) < now) {
-          updateObj.isOverdue = true;
-        } else {
-          updateObj.isOverdue = false;
-        }
+        updateSetFields.completionDate = now;
+        updateSetFields.actualEffortHours =
+          task.actualEffortHours || task.estimatedEffortHours || undefined;
+        updateSetFields.isOverdue = task.dueDate
+          ? new Date(task.dueDate) < now
+          : false;
+      } else if (newStatus !== "已取消" && task.dueDate) {
+        updateSetFields.isOverdue = new Date(task.dueDate) < now;
       }
 
-      // 创建状态变更备注
-      const timestamp = new Date().toISOString().split("T")[0]; // 格式为 YYYY-MM-DD
       const noteContent =
-        comment || `任务状态由"${oldStatus}"变更为"${newStatus}"`;
-
-      const noteObj = {
-        timestamp: timestamp,
+        comment || `任务状态由 "${oldStatus}" 变更为 "${newStatus}"`;
+      const statusChangeNote: StructuredNote = {
+        timestamp: now.toISOString().split("T")[0],
         content: noteContent,
         metadata: {
           type: "status_change",
           previousStatus: oldStatus,
           newStatus: newStatus,
-          tags: ["status_change"],
+          tags: ["status_change", `from:${oldStatus}`, `to:${newStatus}`],
         },
       };
 
-      // 确保notes数组存在且类型正确
-      if (!task.notes || typeof task.notes === "string") {
-        await this.tasksCollection.updateOne(
-          { _id: id },
-          { $set: { notes: [] } }
-        );
+      let finalUpdateOperation: UpdateFilter<Task> = { $set: updateSetFields };
+
+      if (task.notes && typeof task.notes === "string") {
+        if (!finalUpdateOperation.$set) finalUpdateOperation.$set = {};
+        (finalUpdateOperation.$set as Partial<Task>).notes = [
+          {
+            timestamp: task.createdAt.toISOString().split("T")[0],
+            content: task.notes,
+            metadata: { migrated_from_string: true },
+          },
+          statusChangeNote,
+        ];
+      } else {
+        // If notes is undefined or already an array, $push is appropriate.
+        // Use 'as any' to bypass strict TypeScript checking for $push on a union type field.
+        finalUpdateOperation.$push = { notes: statusChangeNote };
       }
 
-      // 添加备注并更新状态
-      await this.tasksCollection.updateOne(
-        { _id: id },
-        {
-          $push: { notes: noteObj },
-          $set: updateObj,
+      const updateResult = await this.updateTask(id, finalUpdateOperation);
+
+      if (updateResult.success && updateResult.task) {
+        if (newStatus === "已完成") {
+          const completedTask = updateResult.task;
+          const learnPattern: MemoryPattern = {
+            type: "task_performance_insight",
+            intent: "record_completion_details",
+            entitiesInvolved: [
+              {
+                type: "task_type",
+                identifier: completedTask.taskType || "unknown_type",
+              },
+              {
+                type: "user",
+                identifier: (
+                  completedTask.assigneeId || "default_user"
+                ).toString(),
+                role: "assignee",
+              },
+            ],
+            customData: {
+              difficulty: completedTask.difficulty,
+              priority: completedTask.priority,
+            },
+          };
+          const learnResult = {
+            taskId: completedTask._id.toString(),
+            taskName: completedTask.name,
+            taskType: completedTask.taskType,
+            estimatedEffortHours: completedTask.estimatedEffortHours,
+            actualEffortHours: completedTask.actualEffortHours,
+            completionDate: completedTask.completionDate,
+            timeOfDayCompleted: completedTask.completionDate?.getHours(),
+            dayOfWeekCompleted: completedTask.completionDate?.getDay(),
+            contextualTagsAtCompletion: completedTask.contextualTags,
+            deviationFromEstimateHours:
+              completedTask.actualEffortHours &&
+              completedTask.estimatedEffortHours
+                ? completedTask.actualEffortHours -
+                  completedTask.estimatedEffortHours
+                : undefined,
+            completedOnTime:
+              completedTask.dueDate && completedTask.completionDate
+                ? completedTask.completionDate <=
+                  new Date(completedTask.dueDate)
+                : true,
+            difficulty: completedTask.difficulty,
+            energyLevelRequired: completedTask.energyLevelRequired,
+          };
+          const learnParams: LearnParams = {
+            pattern: learnPattern,
+            result: learnResult,
+            summary: `任务 "${completedTask.name}" (${
+              completedTask.taskType || "无类型"
+            }) 已完成。预估 ${
+              completedTask.estimatedEffortHours || "N/A"
+            }h, 实际 ${completedTask.actualEffortHours || "N/A"}h.`,
+            entities: [
+              { id: completedTask._id, type: "task", name: completedTask.name },
+            ],
+            importance: 0.5,
+            confidence: 1.0,
+            tier: "long",
+            context: {
+              sourceTool: "TasksModel.updateTaskStatus",
+              sourceEvent: "task_completed",
+              userId: (completedTask.assigneeId || "system_user").toString(),
+            },
+          };
+          this.reminisceManager
+            .learn(learnParams)
+            .then((learnedMemory) => {
+              if (learnedMemory)
+                console.log(
+                  `TasksModel: Successfully learned task completion insight for task ID ${completedTask._id.toString()}. Memory ID: ${learnedMemory._id.toString()}`
+                );
+              else
+                console.warn(
+                  `TasksModel: Failed to learn task completion insight for task ID ${completedTask._id.toString()}.`
+                );
+            })
+            .catch((error) =>
+              console.error(
+                `TasksModel: Error learning task completion insight for ${completedTask._id.toString()}:`,
+                error
+              )
+            );
         }
-      );
-
-      // 查询更新后的任务
-      const updatedTask = await this.getTaskById(id);
-
+      }
       return {
-        success: true,
-        task: updatedTask || undefined,
+        success: updateResult.success,
+        task: updateResult.task,
+        error: updateResult.error,
       };
-    } catch (error) {
+    } catch (error: any) {
+      console.error("TasksModel: Error in updateTaskStatus():", error);
       return {
         success: false,
-        error: `更新任务状态失败: ${error}`,
+        error: `更新任务状态失败: ${error.message || error}`,
       };
     }
   }
 
-  /**
-   * 获取有效的任务状态列表
-   * @returns 状态列表
-   */
   async getValidTaskStatuses(): Promise<string[]> {
-    return ["未开始", "进行中", "已完成", "已取消", "已暂停", "待审核"];
+    return ["待办", "进行中", "已完成", "已取消", "已暂停", "待审核", "已委派"];
   }
 
-  /**
-   * 更新任务
-   * @param taskId 任务ID
-   * @param updateData 要更新的字段
-   * @returns 更新结果
-   */
   async updateTask(
     taskId: string | ObjectId,
-    updateData: Partial<TaskWithStructuredNotes>
+    updateDataOrFilter:
+      | Partial<
+          Omit<Task, "_id" | "createdAt" | "updatedAt" | keyof SyncFields>
+        >
+      | UpdateFilter<Task>
   ): Promise<{
     success: boolean;
-    task?: TaskWithStructuredNotes;
+    task?: Task;
     error?: string;
   }> {
     try {
       const id = ensureObjectId(taskId);
+      let finalUpdateFilter: UpdateFilter<Task>;
 
-      // 删除不应该直接更新的字段
-      const { _id, createdAt, ...safeUpdateData } = updateData as any;
-
-      // 检查是否更新了截止日期并重新计算是否逾期
-      if (safeUpdateData.dueDate) {
-        const dueDate = new Date(safeUpdateData.dueDate);
-        const now = new Date();
-        safeUpdateData.isOverdue = dueDate < now;
+      if (
+        "$set" in updateDataOrFilter ||
+        "$inc" in updateDataOrFilter ||
+        "$push" in updateDataOrFilter ||
+        "$pull" in updateDataOrFilter
+      ) {
+        finalUpdateFilter = updateDataOrFilter as UpdateFilter<Task>;
+      } else {
+        finalUpdateFilter = { $set: updateDataOrFilter as Partial<Task> };
       }
 
-      // 添加更新时间和同步标记
-      const dataToUpdate = {
-        ...safeUpdateData,
-        updatedAt: new Date(),
-        modifiedSinceSync: true,
-      };
+      if (!finalUpdateFilter.$set) finalUpdateFilter.$set = {};
+      (finalUpdateFilter.$set as Partial<Task>).updatedAt = new Date();
+      (finalUpdateFilter.$set as Partial<Task>).modifiedSinceSync = true;
 
-      // 执行更新
+      const setPayload = finalUpdateFilter.$set as Partial<Task>;
+      if (setPayload.dueDate) {
+        const currentTaskData = await this.getTaskById(id);
+        if (
+          currentTaskData &&
+          currentTaskData.status !== "已完成" &&
+          currentTaskData.status !== "已取消"
+        ) {
+          setPayload.isOverdue = new Date(setPayload.dueDate) < new Date();
+        }
+      }
+      if (setPayload.projectId)
+        setPayload.projectId = ensureObjectId(setPayload.projectId);
+      if (setPayload.assigneeId)
+        setPayload.assigneeId = ensureObjectId(setPayload.assigneeId);
+      if (setPayload.delegatedTo)
+        setPayload.delegatedTo = ensureObjectId(setPayload.delegatedTo);
+      if (setPayload.dependencies)
+        setPayload.dependencies = setPayload.dependencies.map((depId) =>
+          ensureObjectId(depId)
+        );
+      if (setPayload.subTasks)
+        setPayload.subTasks = setPayload.subTasks.map((subId) =>
+          ensureObjectId(subId)
+        );
+      if (setPayload.requiredResources) {
+        setPayload.requiredResources = setPayload.requiredResources.map(
+          (res) => ({
+            ...res,
+            resourceId: res.resourceId
+              ? ensureObjectId(res.resourceId)
+              : undefined,
+          })
+        );
+      }
+      if (setPayload.notes && typeof setPayload.notes === "string") {
+        setPayload.notes = [
+          {
+            timestamp: new Date().toISOString().split("T")[0],
+            content: setPayload.notes,
+          },
+        ];
+      }
+
       const result = await this.tasksCollection.updateOne(
         { _id: id },
-        { $set: dataToUpdate }
+        finalUpdateFilter
       );
-
-      if (result.matchedCount === 0) {
+      if (result.matchedCount === 0)
         return { success: false, error: "未找到任务" };
-      }
-
-      // 查询更新后的任务
       const updatedTask = await this.getTaskById(id);
-
-      return {
-        success: true,
-        task: updatedTask || undefined,
-      };
-    } catch (error) {
+      return { success: true, task: updatedTask || undefined };
+    } catch (error: any) {
+      console.error("TasksModel: Error in updateTask():", error);
       return {
         success: false,
-        error: `更新任务失败: ${error}`,
+        error: `更新任务失败: ${error.message || error}`,
       };
     }
   }
 
-  /**
-   * 删除任务
-   * @param taskId 任务ID
-   * @returns 操作结果
-   */
-  async deleteTask(taskId: string | ObjectId): Promise<{
-    success: boolean;
-    error?: string;
-  }> {
+  async deleteTask(
+    taskId: string | ObjectId
+  ): Promise<{ success: boolean; error?: string }> {
     try {
       const id = ensureObjectId(taskId);
-
-      // 删除任务
       const result = await this.tasksCollection.deleteOne({ _id: id });
-
-      if (result.deletedCount === 0) {
+      if (result.deletedCount === 0)
         return { success: false, error: "未找到任务" };
-      }
-
       return { success: true };
-    } catch (error) {
+    } catch (error: any) {
+      console.error("TasksModel: Error in deleteTask():", error);
       return {
         success: false,
-        error: `删除任务失败: ${error}`,
+        error: `删除任务失败: ${error.message || error}`,
       };
     }
   }
 
-  /**
-   * 获取所有任务标签
-   * @returns 任务标签列表
-   */
   async getAllTaskTags(): Promise<string[]> {
-    const result = await this.tasksCollection
-      .aggregate([
-        { $unwind: "$tags" },
-        { $group: { _id: "$tags" } },
-        { $sort: { _id: 1 } },
-      ])
-      .toArray();
-
-    return result.map((item) => item._id);
+    const result = await this.tasksCollection.distinct("tags", {
+      tags: { $exists: true, $ne: null, $not: { $size: 0 } },
+    });
+    return result.sort();
   }
 
-  /**
-   * 获取所有任务类型
-   * @returns 任务类型列表
-   */
   async getAllTaskTypes(): Promise<string[]> {
-    const result = await this.tasksCollection
-      .aggregate([
-        { $group: { _id: "$taskType" } },
-        { $match: { _id: { $ne: null } } },
-        { $sort: { _id: 1 } },
-      ])
-      .toArray();
+    const result = await this.tasksCollection.distinct("taskType", {
+      taskType: { $nin: [null, ""] },
+    });
+    return result.sort();
+  }
 
-    return result.map((item) => item._id);
+  async getTasksByProjectId(projectId: string | ObjectId): Promise<Task[]> {
+    return await this.tasksCollection
+      .find({ projectId: ensureObjectId(projectId) })
+      .toArray();
+  }
+
+  async getTasksByAssignee(assigneeId: string | ObjectId): Promise<Task[]> {
+    return await this.tasksCollection
+      .find({ assigneeId: ensureObjectId(assigneeId) })
+      .toArray();
+  }
+
+  async getTasksDependingOn(dependencyId: string | ObjectId): Promise<Task[]> {
+    return await this.tasksCollection
+      .find({ dependencies: ensureObjectId(dependencyId) })
+      .toArray();
   }
 }

@@ -43,6 +43,10 @@ export class CreateBioDataTool {
         measuredAt,
       } = params;
 
+      const structuredNotes = notes
+        ? [{ content: notes, timestamp: new Date().toISOString() }]
+        : undefined;
+
       // 验证参数
       if (!measurementType) {
         return {
@@ -65,7 +69,7 @@ export class CreateBioDataTool {
         unit,
         recordName,
         context,
-        notes,
+        notes: structuredNotes,
       };
 
       // 处理测量时间

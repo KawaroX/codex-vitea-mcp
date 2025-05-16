@@ -76,7 +76,7 @@ export class CreateTaskTool {
         taskType,
         description,
         workloadLevel,
-        assignee,
+        assigneeId: assignee,
         tags,
       };
 
