@@ -52,7 +52,7 @@ export async function handlePingRequest({
 
     return {
       vitea: {
-        version: "0.1.7",
+        version: "0.1.8",
         mode: isReadOnlyMode ? "只读" : "读写",
         collections: {
           total: collections.length,

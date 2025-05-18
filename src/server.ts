@@ -38,7 +38,7 @@ export function createServer(
   const server = new Server(
     {
       name: "codex-vitea-mcp",
-      version: "0.1.7",
+      version: "0.1.8",
       ...options,
     },
     {
